@@ -158,7 +158,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             "size calculation, for example, adapter dimers.", optional = true)
     public int MIN_GROUP_COUNT = 2;
 
-    private final Log log = Log.getInstance(EstimateLibraryComplexity.class);
+    protected final Log log = Log.getInstance(EstimateLibraryComplexity.class);
 
     @Override
     protected String[] customCommandLineValidation() {
@@ -217,7 +217,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         }
 
         // Split read by (MAX_DIFF_RATE * read.length + 1) parts and hash each part
-        private int[] getHashes(byte[] read, int maxReadLength, int hashLength, int skippedBases) {
+        protected int[] getHashes(byte[] read, int maxReadLength, int hashLength, int skippedBases) {
             int maxLengthWithoutHead = maxReadLength - skippedBases;
             int hashNum = (Math.min(read.length - skippedBases, maxLengthWithoutHead)) /
                     hashLength;
@@ -374,7 +374,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
      * Comparator that orders read pairs on the first N bases of both reads.
      * There is no tie-breaking, so any sort is stable, not total.
      */
-    private class PairedReadComparator implements Comparator<PairedReadSequence> {
+    protected class PairedReadComparator implements Comparator<PairedReadSequence> {
         final int BASES = EstimateLibraryComplexity.this.MIN_IDENTICAL_BASES;
 
         public int compare(final PairedReadSequence lhs, final PairedReadSequence rhs) {
@@ -405,11 +405,11 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         else return attr.hashCode();
     }
 
-    private int getReadOneBarcodeValue(final SAMRecord record) {
+    protected int getReadOneBarcodeValue(final SAMRecord record) {
         return getReadBarcodeValue(record, READ_ONE_BARCODE_TAG);
     }
 
-    private int getReadTwoBarcodeValue(final SAMRecord record) {
+    protected int getReadTwoBarcodeValue(final SAMRecord record) {
         return getReadBarcodeValue(record, READ_TWO_BARCODE_TAG);
     }
 
