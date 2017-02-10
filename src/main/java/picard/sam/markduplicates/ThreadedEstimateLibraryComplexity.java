@@ -46,9 +46,9 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
 
     protected ELCSortResponse doSmartSort(boolean useBarcodes)
     {
-        IOUtil.assertFilesAreReadable(INPUT);
-
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
+
+        long startTime = System.nanoTime();
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final SortingCollection<PairedReadSequence> sorter;
@@ -136,16 +136,23 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             CloserUtil.close(in);
         }
 
+        log.info("SORTING - SMART-SORT ELC (ms) : "
+                + (sortTime = (double)((System.nanoTime() - startTime)/1000000)));
+
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
         return new ELCSortResponse(sorter, readGroups, progress);
     }
 
     protected int doWork() {
+        IOUtil.assertFilesAreReadable(INPUT);
+
         final boolean useBarcodes   = (null != BARCODE_TAG
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
         final ELCSortResponse response = doSmartSort(useBarcodes);
+
+        long startTime = System.nanoTime();
 
         final SortingCollection<PairedReadSequence> sorter = response.getSorter();
         final ProgressLogger progress = response.getProgress();
@@ -239,6 +246,11 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             file.addMetric(metrics);
             file.addHistogram(duplicationHisto);
         }
+
+        double elcTime;
+        log.info("DUPLICATE - THREADED ELC (ms) : "
+                + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
+        log.info("TOTAL TIME - THREADED ELC (ms) : " + (sortTime + elcTime));
 
         file.write(OUTPUT);
         return 0;

@@ -45,11 +45,14 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
     }
 
     protected int doWork() {
+        IOUtil.assertFilesAreReadable(INPUT);
         final boolean useBarcodes   = (null != BARCODE_TAG
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
         final ELCSortResponse response = doSmartSort(useBarcodes);
+
+        long startTime = System.nanoTime();
 
         final SortingCollection<PairedReadSequence> sorter = response.getSorter();
         final ProgressLogger progress = response.getProgress();
@@ -143,6 +146,11 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
             file.addMetric(metrics);
             file.addHistogram(duplicationHisto);
         }
+
+        double elcTime;
+        log.info("DUPLICATE - STREAMED ELC (ms) : "
+                + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
+        log.info("TOTAL TIME - STREAMED ELC (ms) : " + (sortTime + elcTime));
 
         file.write(OUTPUT);
         return 0;

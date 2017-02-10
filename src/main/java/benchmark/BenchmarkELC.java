@@ -21,16 +21,7 @@ public class BenchmarkELC
 
     public static void main(String[] args)
     {
-        String[] arguments = new String[]
-        {
-            "EstimateLibraryComplexity",
-            "\\",
-            "I=" + BenchmarkVariables.IN_FILE_PATH//.replaceAll("\\\\", "/")
-            ,"\\",
-            "O=" + BenchmarkVariables.OUT_FILE_PATH//.replaceAll("\\\\", "/")
-        };
-
-        new EstimateLibraryComplexity().instanceMain(arguments);
+        new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 
     private static void Filalize()
