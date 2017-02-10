@@ -52,6 +52,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final SortingCollection<PairedReadSequence> sorter;
+        final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
 
         if (!useBarcodes)
             sorter = SortingCollection.newInstance(PairedReadSequence.class,
@@ -67,7 +68,6 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
                     TMP_DIR);
 
         // Loop through the input files and pick out the read sequences etc.
-        final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
 
         for (final File f : INPUT)
         {
@@ -75,17 +75,17 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
             readGroups.addAll(in.getFileHeader().getReadGroups());
 
-            for (final SAMRecord rec : in) {
-                if (!rec.getReadPairedFlag())
-                    continue;
-                if (!rec.getFirstOfPairFlag() && !rec.getSecondOfPairFlag())
-                    continue;
-                if (rec.isSecondaryOrSupplementary())
-                    continue;
+            for (final SAMRecord rec : in)
+            {
+                if (!rec.getReadPairedFlag()
+                    || (!rec.getFirstOfPairFlag() && !rec.getSecondOfPairFlag())
+                    || rec.isSecondaryOrSupplementary())
+                        continue;
 
                 PairedReadSequence prs = pendingByName.remove(rec.getReadName());
 
-                if (prs == null) {
+                if (prs == null)
+                {
                     // Make a new paired read object and add RG and physical location information to it
                     prs = useBarcodes ? new PairedReadSequenceWithBarcodes() : new PairedReadSequence();
 
@@ -107,8 +107,10 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
                 prs.qualityOk = prs.qualityOk && passesQualityCheck;
 
                 // Get the bases and restore them to their original orientation if necessary
-                final byte[] bases = rec.getReadBases();
-                if (rec.getReadNegativeStrandFlag()) SequenceUtil.reverseComplement(bases);
+                final byte[] bases = rec.getReadBases(); // READ
+
+                if (rec.getReadNegativeStrandFlag())
+                    SequenceUtil.reverseComplement(bases);
 
                 final PairedReadSequenceWithBarcodes prsWithBarcodes = (useBarcodes)
                                                                     ? (PairedReadSequenceWithBarcodes) prs
@@ -161,8 +163,8 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new HashMap<String, Histogram<Integer>>();
         final Map<String, Histogram<Integer>> opticalHistosByLibrary = new HashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new HashMap<String, Histogram<Integer>>();
 
         int groupsProcessed = 0;
         long lastLogTime = System.currentTimeMillis();
@@ -181,14 +183,20 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             // Get the next group and split it apart by library
             final List<PairedReadSequence> group = getNextGroup(iterator);
 
-            if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
+            if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
+            {
                 final PairedReadSequence prs = group.get(0);
-                log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
-                        "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
-                        StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
-                        " / " +
-                        StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
-            } else {
+
+                log.warn("Omitting group with over "
+                        + MAX_GROUP_RATIO + " times the expected mean number of read pairs. "
+                        + "Mean=" + meanGroupSize
+                        + ", Actual=" + group.size()
+                        + ". Prefixes: " + StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES)
+                        + " / "
+                        + StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+            }
+            else
+            {
                 final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
 
                 // Now process the reads by library
@@ -198,19 +206,24 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
                     final List<PairedReadSequence> seqs = entry.getValue();
 
                     Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+
                     Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
 
-                    if (duplicationHisto == null) {
+                    if (duplicationHisto == null)
+                    {
+
                         duplicationHisto = new Histogram<>("duplication_group_count", library);
                         opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
                         duplicationHistosByLibrary.put(library, duplicationHisto);
                         opticalHistosByLibrary.put(library, opticalHisto);
                     }
+
                     algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
                 }
                 ++groupsProcessed;
 
-                if (lastLogTime < System.currentTimeMillis() - 60000) {
+                if (lastLogTime < System.currentTimeMillis() - 60000)
+                {
                     log.info("Processed " + groupsProcessed + " groups.");
                     lastLogTime = System.currentTimeMillis();
                 }
@@ -227,6 +240,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
             final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
             final DuplicationMetrics metrics = new DuplicationMetrics();
+
             metrics.LIBRARY = library;
 
             // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics

@@ -8,6 +8,7 @@ package benchmark;
 
 
 import picard.sam.markduplicates.EstimateLibraryComplexity;
+import picard.sam.markduplicates.StreamedEstimateLibraryComplexity;
 
 /*
  * Entrance point for ELC benchmarks & tests
@@ -21,7 +22,8 @@ public class BenchmarkELC
 
     public static void main(String[] args)
     {
-        new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
+        //new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
+        new StreamedEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 
     private static void Filalize()
