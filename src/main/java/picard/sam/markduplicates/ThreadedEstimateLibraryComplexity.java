@@ -12,6 +12,8 @@ import htsjdk.samtools.SamReader;
 import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
+import picard.cmdline.CommandLineProgramProperties;
+import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 
 import java.io.File;
@@ -25,26 +27,24 @@ import static java.lang.Math.pow;
 /*
  * Threaded version of the ELC
  */
+@CommandLineProgramProperties(
+        usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,
+        usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
+        programGroup = Metrics.class
+)
 public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
 {
     protected final Log log = Log.getInstance(ThreadedEstimateLibraryComplexity.class);
 
     public ThreadedEstimateLibraryComplexity() {
-        final int sizeInBytes;
-
-        if (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG)
-            sizeInBytes = PairedReadSequenceWithBarcodes.getSizeInBytes();
-        else
-            sizeInBytes = PairedReadSequence.getSizeInBytes();
-
-        MAX_RECORDS_IN_RAM = (int) (Runtime.getRuntime().maxMemory() / sizeInBytes) / 2;
+        super();
     }
 
     public void Initite(String[] args) {
-        instanceMainWithExit(args);
+        instanceMain(args);
     }
 
-    protected ELSSortResponse doSort(boolean useBarcodes)
+    protected ELCSortResponse doSmartSort(boolean useBarcodes)
     {
         IOUtil.assertFilesAreReadable(INPUT);
 
@@ -137,7 +137,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         }
 
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
-        return new ELSSortResponse(sorter, readGroups, progress);
+        return new ELCSortResponse(sorter, readGroups, progress);
     }
 
     protected int doWork() {
@@ -145,7 +145,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ELSSortResponse response = doSort(useBarcodes);
+        final ELCSortResponse response = doSmartSort(useBarcodes);
 
         final SortingCollection<PairedReadSequence> sorter = response.getSorter();
         final ProgressLogger progress = response.getProgress();

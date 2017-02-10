@@ -428,20 +428,13 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         MAX_RECORDS_IN_RAM = (int) (Runtime.getRuntime().maxMemory() / sizeInBytes) / 2;
     }
 
-    /**
-     * Method that does most of the work.  Reads through the input BAM file and extracts the
-     * read sequences of each read pair and sorts them via a SortingCollection.  Then traverses
-     * the sorted reads and looks at small groups at a time to find duplicates.
-     */
-    @Override
-    protected int doWork() {
-        for (final File f : INPUT) IOUtil.assertFileIsReadable(f);
-
+    // To benchmark perfomance while sort part is active
+    protected ELCSortResponse doSort(boolean useBarcodes)
+    {
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final SortingCollection<PairedReadSequence> sorter;
-        final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
 
         if (!useBarcodes) {
             sorter = SortingCollection.newInstance(PairedReadSequence.class,
@@ -459,6 +452,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         // Loop through the input files and pick out the read sequences etc.
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
+
         for (final File f : INPUT) {
             final Map<String, PairedReadSequence> pendingByName = new HashMap<String, PairedReadSequence>();
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
@@ -519,6 +513,26 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         }
 
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+
+        return new ELCSortResponse(sorter, readGroups, progress);
+    }
+
+    /**
+     * Method that does most of the work.  Reads through the input BAM file and extracts the
+     * read sequences of each read pair and sorts them via a SortingCollection.  Then traverses
+     * the sorted reads and looks at small groups at a time to find duplicates.
+     */
+    @Override
+    protected int doWork() {
+        for (final File f : INPUT) IOUtil.assertFileIsReadable(f);
+
+        final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
+
+        final ELCSortResponse response = doSort(useBarcodes);
+
+        final SortingCollection<PairedReadSequence> sorter = response.getSorter();
+        final ProgressLogger progress = response.getProgress();
+        final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());

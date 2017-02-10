@@ -26,9 +26,6 @@ mainClassName = "picard.cmdline.PicardCommandLine"
 repositories {
     mavenLocal()
     mavenCentral()
-    maven {
-        url "https://artifactory.broadinstitute.org/artifactory/libs-snapshot/" //for htsjdk snapshots
-    }
 }
 
 jacocoTestReport {
@@ -52,6 +49,7 @@ final htsjdkVersion = System.getProperty('htsjdk.version', '2.8.0')
 dependencies {
     compile 'com.google.guava:guava:15.0'
     compile 'com.github.samtools:htsjdk:' + htsjdkVersion
+
     //tools dependency for doclet requires sdk devel
     compile(files(((URLClassLoader) ToolProvider.getSystemToolClassLoader()).getURLs()))
     testCompile 'org.testng:testng:6.9.10'

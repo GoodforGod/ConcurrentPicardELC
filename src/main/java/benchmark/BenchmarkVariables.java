@@ -11,7 +11,8 @@ package benchmark;
  */
 public class BenchmarkVariables
 {
-    public static final String FILE_PATH = "C:\\data\\bam\\na_s.bam";
+    public static final String IN_FILE_PATH = "C:\\data\\bam\\na_s.bam";
+    public static final String OUT_FILE_PATH = "C:\\data\\bam\\na_s_out.txt";
 
     public static final int CORES = 4;
 }

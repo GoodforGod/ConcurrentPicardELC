@@ -15,14 +15,14 @@ import java.util.List;
 /*
  * DEFAULT COMMENT
  */
-public class ELSSortResponse
+public class ELCSortResponse
 {
     private SortingCollection<EstimateLibraryComplexity.PairedReadSequence> sorter;
     private List<SAMReadGroupRecord> readGroup;
     private ProgressLogger progress;
 
-    public ELSSortResponse(SortingCollection<EstimateLibraryComplexity.PairedReadSequence> sorter,
-                            List<SAMReadGroupRecord> readGroup,
+    public ELCSortResponse(SortingCollection<EstimateLibraryComplexity.PairedReadSequence> sorter,
+                           List<SAMReadGroupRecord> readGroup,
                            ProgressLogger progress)
     {
         this.sorter = sorter;
