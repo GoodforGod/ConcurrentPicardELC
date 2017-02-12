@@ -21,6 +21,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Predicate;
 
 import static java.lang.Math.pow;
 
@@ -77,6 +78,10 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
                 useBarcodes,
                 opticalDuplicateFinder
         );
+
+        Predicate<List<PairedReadSequence>> pairFilter = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
+
+
 
         while (iterator.hasNext())
         {
