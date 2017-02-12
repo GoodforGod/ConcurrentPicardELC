@@ -9,6 +9,8 @@ package picard.sam.markduplicates;
 import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
+import picard.cmdline.CommandLineProgramProperties;
+import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 
 import java.util.HashMap;
@@ -22,9 +24,21 @@ import static java.lang.Math.pow;
 /*
  * DEFAULT COMMENT
  */
+@CommandLineProgramProperties(
+        usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,
+        usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
+        programGroup = Metrics.class
+)
 public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibraryComplexity
 {
+    protected final Log log = Log.getInstance(ThreadPoolEstimateLibraryComplexity.class);
+
+    public ThreadPoolEstimateLibraryComplexity(){
+        super();
+    }
+
     protected int doWork() {
+
         IOUtil.assertFilesAreReadable(INPUT);
 
         final boolean useBarcodes   = (null != BARCODE_TAG
@@ -58,11 +72,13 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
         );
 
         final int CORE_COUNT = 4 * 2;
-
         BlockingQueue iterateQueue = new ArrayBlockingQueue(CORE_COUNT);
+
+        long startSortIterateTime = System.nanoTime();
 
         while (iterator.hasNext())
         {
+            long startWork = System.nanoTime();
             // Get the next group and split it apart by library
             final List<PairedReadSequence> group = getNextGroup(iterator);
 
@@ -94,7 +110,15 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
                     algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
                 }
                 ++groupsProcessed;
-
+/*
+                log.info("WORK ON GROUP SIZE - TIME (microseconds) : " + (double) ((System.nanoTime() - startTime) / 1000)
+                        + " | GROUP SIZE : "
+                        + group.size()
+                        + " | ENTRY SET SIZE : "
+                        + sequencesByLibrary.entrySet().size()
+                        + " | TIME ELAPSED : "
+                        + (double)(System.nanoTime() - startWork));
+*/
                 if (lastLogTime < System.currentTimeMillis() - 60000) {
                     log.info("Processed " + groupsProcessed + " groups.");
                     lastLogTime = System.currentTimeMillis();
@@ -102,13 +126,20 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
             }
         }
 
+        log.info("TIME IN SORTING ITERATING (ms) : "
+                + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+
         iterator.close();
         sorter.cleanup();
+
+        long startMetricFile = System.nanoTime();
 
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
         for (final String library : duplicationHistosByLibrary.keySet())
         {
+            long startHistogram = System.nanoTime();
+
             final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
             final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
             final DuplicationMetrics metrics = new DuplicationMetrics();
@@ -130,12 +161,25 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
             metrics.calculateDerivedFields();
             file.addMetric(metrics);
             file.addHistogram(duplicationHisto);
+/*
+            log.info("HISTOGRAM INFO - "
+                    + (double)(System.nanoTime() - startHistogram)
+                    + " LIBRARY : "
+                    + library
+                    + " | duplicationHisto SIZE : "
+                    + duplicationHisto.size()
+                    + " | opticalHisto SIZE : "
+                    + opticalHisto.size());
+*/
         }
 
         double elcTime;
-        log.info("DUPLICATE - THREADED ELC (ms) : "
+        log.info("METRIC - THREAD POOL ELC (ms) : "
+                + ((double)((System.nanoTime() - startMetricFile)/1000000)));
+
+        log.info("doWork - THREAD POOL ELC (ms) : "
                 + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info("TOTAL TIME - THREADED ELC (ms) : " + (sortTime + elcTime));
+        log.info("TOTAL TIME - THREAD POOL ELC (ms) : " + (sortTime + elcTime));
 
         file.write(OUTPUT);
         return 0;

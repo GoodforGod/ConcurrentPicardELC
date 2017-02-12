@@ -45,7 +45,9 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
     }
 
     protected int doWork() {
+
         IOUtil.assertFilesAreReadable(INPUT);
+
         final boolean useBarcodes   = (null != BARCODE_TAG
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
