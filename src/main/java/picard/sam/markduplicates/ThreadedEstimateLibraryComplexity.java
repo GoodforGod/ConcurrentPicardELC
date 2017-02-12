@@ -125,14 +125,12 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
                         })
                         .filter(isPairAndRecValid)
                         .map(this::FillPairedSequence)
-                    .count();
+                        .count();
 
             log.info("FILE SORTED - SMART-SORT ELC (ms) : "
                     + ((double) ((System.nanoTime() - startRecLoop) / 1000000))
-                    + " | FOR FILE PATH : "
-                    + f.getPath()
-                    + " | COUNT : "
-                    + count);
+                    + " | FOR FILE PATH : " + f.getPath()
+                    + " | COUNT : " + count);
 
             CloserUtil.close(in);
         }
@@ -287,18 +285,18 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
 
         long startTime = System.nanoTime();
 
-        final SortingCollection<PairedReadSequence> sorter = response.getSorter();
-        final ProgressLogger progress = response.getProgress();
-        final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
+        final SortingCollection<PairedReadSequence> sorter      = response.getSorter();
+        final ProgressLogger                        progress    = response.getProgress();
+        final List<SAMReadGroupRecord>              readGroups  = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> opticalHistosByLibrary = new HashMap<String, Histogram<Integer>>();
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new HashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> opticalHistosByLibrary     = new ConcurrentHashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<String, Histogram<Integer>>();
 
         int groupsProcessed = 0;
-        long lastLogTime = System.currentTimeMillis();
+        long lastLogTime    = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
         ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
