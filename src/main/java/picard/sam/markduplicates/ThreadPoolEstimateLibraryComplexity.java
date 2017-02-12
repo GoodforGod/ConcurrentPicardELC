@@ -13,11 +13,12 @@ import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.lang.Math.pow;
 
@@ -75,58 +76,81 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
         BlockingQueue iterateQueue = new ArrayBlockingQueue(CORE_COUNT);
 
         long startSortIterateTime = System.nanoTime();
+        int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
+        int streamable = streamReady / 10000;
 
-        while (iterator.hasNext())
-        {
-            long startWork = System.nanoTime();
-            // Get the next group and split it apart by library
+        ForkJoinPool pool = new ForkJoinPool();
+
+        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<List<PairedReadSequence>>();
+        ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
+                = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
+
+        pool.execute(() -> {
+            final List<List<PairedReadSequence>> groupList = groupQueue.poll();
+            pool.submit(() ->
+            {
+                for(List<PairedReadSequence> groupPairs : groupList) {
+                    long startWork = System.nanoTime();
+                    // Get the next group and split it apart by library
+                    final List<PairedReadSequence> group = getNextGroup(iterator);
+
+                    if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
+                        final PairedReadSequence prs = group.get(0);
+                        log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
+                                "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
+                                StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
+                                " / " +
+                                StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+                    } else {
+                        final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
+
+                        // Now process the reads by library
+                        for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
+                            final String library = entry.getKey();
+                            final List<PairedReadSequence> seqs = entry.getValue();
+
+                            Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                            Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+
+                            if (duplicationHisto == null) {
+                                duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                duplicationHistosByLibrary.put(library, duplicationHisto);
+                                opticalHistosByLibrary.put(library, opticalHisto);
+                            }
+                            algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                        }
+                    }
+                }
+            });
+        });
+
+        while (iterator.hasNext()) {
             final List<PairedReadSequence> group = getNextGroup(iterator);
 
-            if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
+            if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
+            {
                 final PairedReadSequence prs = group.get(0);
-                log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
-                        "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
-                        StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
-                        " / " +
-                        StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
-            } else {
-                final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
+                log.warn("Omitting group with over " + MAX_GROUP_RATIO
+                        + " times the expected mean number of read pairs. Mean=" + meanGroupSize
+                        + ", Actual="    + group.size()
+                        + ". Prefixes: " + StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES)
+                        + " / "          + StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+            }
+            else
+            {
+                groupsProcessed++;
+                temporaryGroups.add(group);
 
-                // Now process the reads by library
-                for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet())
+                if(temporaryGroups.size() >= streamable || !iterator.hasNext())
                 {
-                    final String library = entry.getKey();
-                    final List<PairedReadSequence> seqs = entry.getValue();
-
-                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-
-                    if (duplicationHisto == null) {
-                        duplicationHisto = new Histogram<>("duplication_group_count", library);
-                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                        duplicationHistosByLibrary.put(library, duplicationHisto);
-                        opticalHistosByLibrary.put(library, opticalHisto);
-                    }
-                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                }
-                ++groupsProcessed;
-/*
-                log.info("WORK ON GROUP SIZE - TIME (microseconds) : " + (double) ((System.nanoTime() - startTime) / 1000)
-                        + " | GROUP SIZE : "
-                        + group.size()
-                        + " | ENTRY SET SIZE : "
-                        + sequencesByLibrary.entrySet().size()
-                        + " | TIME ELAPSED : "
-                        + (double)(System.nanoTime() - startWork));
-*/
-                if (lastLogTime < System.currentTimeMillis() - 60000) {
-                    log.info("Processed " + groupsProcessed + " groups.");
-                    lastLogTime = System.currentTimeMillis();
+                    groupQueue.add(new ArrayList<>(temporaryGroups));
+                    temporaryGroups.clear();
                 }
             }
         }
 
-        log.info("TIME IN SORTING ITERATING (ms) : "
+        log.info("SORTER PROCESS - (ms) : "
                 + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
 
         iterator.close();

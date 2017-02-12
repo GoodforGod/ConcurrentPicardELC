@@ -87,10 +87,40 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
         Predicate<List<PairedReadSequence>> pairFilter = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
 
         int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
-        int streamable = streamReady / 100;
+        int streamable = streamReady / 10000;
 
-        ExecutorService pool = Executors.newCachedThreadPool();
-        List<List<PairedReadSequence>> allGroups = new ArrayList<>(streamable + 1);
+        ForkJoinPool pool = new ForkJoinPool();
+
+        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<List<PairedReadSequence>>();
+        ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
+                = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
+
+        pool.execute(() -> {
+            final List<List<PairedReadSequence>> groupList = groupQueue.poll();
+            pool.submit(() ->
+            {
+                groupList.stream()
+                        .parallel()
+                        .unordered()
+                        .map(grps -> splitByLibrary(grps, readGroups))
+                        .flatMap(entry -> entry.entrySet().stream())
+                        .forEach(entry -> {
+                            final String library = entry.getKey();
+                            final List<PairedReadSequence> seqs = entry.getValue();
+
+                            Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                            Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+
+                            if (duplicationHisto == null) {
+                                duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                duplicationHistosByLibrary.put(library, duplicationHisto);
+                                opticalHistosByLibrary.put(library, opticalHisto);
+                            }
+                            algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                        });
+            });
+        });
 
         while (iterator.hasNext()) {
             final List<PairedReadSequence> group = getNextGroup(iterator);
@@ -107,32 +137,12 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
             else
             {
                 ++groupsProcessed;
-                allGroups.add(group);
-                if(allGroups.size() >= streamable || !iterator.hasNext()) {
-                    final List<List<PairedReadSequence>> toProceed = new ArrayList<>(allGroups);
-                    allGroups.clear();
-                    pool.execute(() -> {
-                        toProceed.stream()
-                                .parallel()
-                                .unordered()
-                                .map(grps -> splitByLibrary(grps, readGroups))
-                                .flatMap(entry -> entry.entrySet().stream())
-                                .forEach(entry -> {
-                                    final String library = entry.getKey();
-                                    final List<PairedReadSequence> seqs = entry.getValue();
+                temporaryGroups.add(group);
 
-                                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-
-                                    if (duplicationHisto == null) {
-                                        duplicationHisto = new Histogram<>("duplication_group_count", library);
-                                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                                        duplicationHistosByLibrary.put(library, duplicationHisto);
-                                        opticalHistosByLibrary.put(library, opticalHisto);
-                                    }
-                                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                                });
-                    });
+                if(temporaryGroups.size() >= streamable || !iterator.hasNext())
+                {
+                    groupQueue.add(new ArrayList<>(temporaryGroups));
+                    temporaryGroups.clear();
                 }
             }
         }
@@ -142,36 +152,53 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
 
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
-        for (final String library : duplicationHistosByLibrary.keySet())
-        {
-            final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-            final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-            final DuplicationMetrics metrics = new DuplicationMetrics();
-            metrics.LIBRARY = library;
+        ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
 
-            // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
-            for (final Integer bin : duplicationHisto.keySet())
+        for (final String library : duplicationHistosByLibrary.keySet()) {
+            pool.execute(() ->
             {
-                final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                final double opticalDuplicates = opticalHisto.get(bin) == null ? 0 : opticalHisto.get(bin).getValue();
+                final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                final DuplicationMetrics metrics = new DuplicationMetrics();
 
-                if (duplicateGroups >= MIN_GROUP_COUNT)
-                {
-                    metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
-                    metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
-                    metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                metrics.LIBRARY = library;
+                // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
+
+                for (final Integer bin : duplicationHisto.keySet()) {
+                    final double duplicateGroups = duplicationHisto.get(bin).getValue();
+                    final double opticalDuplicates = opticalHisto.get(bin) == null
+                            ? 0
+                            : opticalHisto.get(bin).getValue();
+
+                    if (duplicateGroups >= MIN_GROUP_COUNT) {
+                        metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
+                        metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
+                        metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                    }
                 }
-            }
-            metrics.calculateDerivedFields();
-            file.addMetric(metrics);
-            file.addHistogram(duplicationHisto);
+                metrics.calculateDerivedFields();
+                queue.add(new HistoAndMetric(metrics, duplicationHisto));
+            });
         }
 
-        double elcTime;
-        log.info("DUPLICATE - STREAMED ELC (ms) : "
-                + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info("TOTAL TIME - STREAMED ELC (ms) : " + (sortTime + elcTime));
+        double elcTime = System.nanoTime();
+        log.info("DUPLICATE - STREAMED ELC (ms) : " + (double)(elcTime - startTime)/1000000);
+        log.info("TOTAL TIME - STREAMED ELC (ms) : " + (double)(sortTime + elcTime)/1000000);
 
+        pool.shutdown();
+
+        try {
+            pool.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        queue.forEach((histoAndMetric -> {
+            file.addMetric(histoAndMetric.metrics);
+            file.addHistogram(histoAndMetric.duplicationHisto);
+        }));
+
+        pool.shutdown();
         file.write(OUTPUT);
         return 0;
     }

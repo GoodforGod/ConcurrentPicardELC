@@ -19,6 +19,7 @@ import picard.sam.DuplicationMetrics;
 import java.io.File;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collector;
@@ -53,8 +54,36 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         }
     }
 
+    public class HistoAndMetric
+    {
+        final Histogram<Integer> duplicationHisto;
+        final DuplicationMetrics metrics;
+
+        public HistoAndMetric(DuplicationMetrics metrics,
+                              Histogram<Integer> duplicationHisto)
+        {
+            this.duplicationHisto = duplicationHisto;
+            this.metrics = metrics;
+        }
+    }
+
     public ThreadedEstimateLibraryComplexity() {
         super();
+    }
+
+    protected PairedReadSequence FillPairedSequence(PairAndRec prsAndRec)
+    {
+        final byte[] bases = prsAndRec.rec.getReadBases();
+
+        if (prsAndRec.rec.getReadNegativeStrandFlag())
+            SequenceUtil.reverseComplement(bases);
+
+        if (prsAndRec.rec.getFirstOfPairFlag())
+            prsAndRec.prs.read1 = bases;
+        else
+            prsAndRec.prs.read2 = bases;
+
+        return prsAndRec.prs;
     }
 
     protected ELCSortResponse doStreamSort(final boolean useBarcodes) {
@@ -141,21 +170,6 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
 
         return new ELCSortResponse(sorter, readGroups, progress);
-    }
-
-    protected PairedReadSequence FillPairedSequence(PairAndRec prsAndRec)
-    {
-        final byte[] bases = prsAndRec.rec.getReadBases();
-
-        if (prsAndRec.rec.getReadNegativeStrandFlag())
-            SequenceUtil.reverseComplement(bases);
-
-        if (prsAndRec.rec.getFirstOfPairFlag())
-            prsAndRec.prs.read1 = bases;
-        else
-            prsAndRec.prs.read2 = bases;
-
-        return prsAndRec.prs;
     }
 
     protected ELCSortResponse doSmartSort(final boolean useBarcodes)
@@ -307,54 +321,76 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
                 opticalDuplicateFinder
         );
 
-        while (iterator.hasNext())
-        {
-            // Get the next group and split it apart by library
+        int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
+        int streamable = streamReady / 10000;
+
+        ExecutorService pool = Executors.newCachedThreadPool();
+
+        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<List<PairedReadSequence>>();
+        ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
+                = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
+
+        pool.execute(() -> {
+            final List<List<PairedReadSequence>> groupList = groupQueue.poll();
+            pool.submit(() ->
+            {
+                for(List<PairedReadSequence> groupPairs : groupList) {
+                    long startWork = System.nanoTime();
+                    // Get the next group and split it apart by library
+                    final List<PairedReadSequence> group = getNextGroup(iterator);
+
+                    if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
+                        final PairedReadSequence prs = group.get(0);
+                        log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
+                                "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
+                                StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
+                                " / " +
+                                StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+                    } else {
+                        final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
+
+                        // Now process the reads by library
+                        for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
+                            final String library = entry.getKey();
+                            final List<PairedReadSequence> seqs = entry.getValue();
+
+                            Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                            Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+
+                            if (duplicationHisto == null) {
+                                duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                duplicationHistosByLibrary.put(library, duplicationHisto);
+                                opticalHistosByLibrary.put(library, opticalHisto);
+                            }
+                            algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                        }
+                    }
+                }
+            });
+        });
+
+        while (iterator.hasNext()) {
             final List<PairedReadSequence> group = getNextGroup(iterator);
 
             if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
             {
                 final PairedReadSequence prs = group.get(0);
-
-                log.warn("Omitting group with over "
-                        + MAX_GROUP_RATIO + " times the expected mean number of read pairs. "
-                        + "Mean=" + meanGroupSize
-                        + ", Actual=" + group.size()
+                log.warn("Omitting group with over " + MAX_GROUP_RATIO
+                        + " times the expected mean number of read pairs. Mean=" + meanGroupSize
+                        + ", Actual="    + group.size()
                         + ". Prefixes: " + StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES)
-                        + " / "
-                        + StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+                        + " / "          + StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
             }
             else
             {
-                final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
+                groupsProcessed++;
+                temporaryGroups.add(group);
 
-                // Now process the reads by library
-                for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet())
+                if(temporaryGroups.size() >= streamable || !iterator.hasNext())
                 {
-                    final String library = entry.getKey();
-                    final List<PairedReadSequence> seqs = entry.getValue();
-
-                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-
-                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-
-                    if (duplicationHisto == null)
-                    {
-
-                        duplicationHisto = new Histogram<>("duplication_group_count", library);
-                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                        duplicationHistosByLibrary.put(library, duplicationHisto);
-                        opticalHistosByLibrary.put(library, opticalHisto);
-                    }
-
-                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                }
-                ++groupsProcessed;
-
-                if (lastLogTime < System.currentTimeMillis() - 60000)
-                {
-                    log.info("Processed " + groupsProcessed + " groups.");
-                    lastLogTime = System.currentTimeMillis();
+                    groupQueue.add(new ArrayList<>(temporaryGroups));
+                    temporaryGroups.clear();
                 }
             }
         }
@@ -364,31 +400,49 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
 
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
+        ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
+        ExecutorService executorService = Executors.newCachedThreadPool();
+
         for (final String library : duplicationHistosByLibrary.keySet())
         {
-            final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-            final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-            final DuplicationMetrics metrics = new DuplicationMetrics();
-
-            metrics.LIBRARY = library;
-
-            // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
-            for (final Integer bin : duplicationHisto.keySet())
+            executorService.submit(() ->
             {
-                final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                final double opticalDuplicates = opticalHisto.get(bin) == null ? 0 : opticalHisto.get(bin).getValue();
+                final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                final DuplicationMetrics metrics = new DuplicationMetrics();
 
-                if (duplicateGroups >= MIN_GROUP_COUNT)
+                metrics.LIBRARY = library;
+
+                // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
+                for (final Integer bin : duplicationHisto.keySet())
                 {
-                    metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
-                    metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
-                    metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                    final double duplicateGroups = duplicationHisto.get(bin).getValue();
+                    final double opticalDuplicates = opticalHisto.get(bin) == null ? 0 : opticalHisto.get(bin).getValue();
+
+                    if (duplicateGroups >= MIN_GROUP_COUNT)
+                    {
+                        metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
+                        metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
+                        metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                    }
                 }
-            }
-            metrics.calculateDerivedFields();
-            file.addMetric(metrics);
-            file.addHistogram(duplicationHisto);
+                metrics.calculateDerivedFields();
+                queue.add(new HistoAndMetric(metrics, duplicationHisto));
+            });
         }
+
+        executorService.shutdown();
+
+        try {
+            executorService.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        queue.forEach((histoAndMetric -> {
+            file.addMetric(histoAndMetric.metrics);
+            file.addHistogram(histoAndMetric.duplicationHisto);
+        }));
 
         double elcTime;
         log.info("DUPLICATE - THREADED ELC (ms) : "
