@@ -18,7 +18,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.lang.Math.pow;
 
@@ -30,11 +29,11 @@ import static java.lang.Math.pow;
         usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
         programGroup = Metrics.class
 )
-public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibraryComplexity
+public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimateLibraryComplexity
 {
-    protected final Log log = Log.getInstance(ThreadPoolEstimateLibraryComplexity.class);
+    protected final Log log = Log.getInstance(ThreadFJPoolEstimateLibraryComplexity.class);
 
-    public ThreadPoolEstimateLibraryComplexity(){
+    public ThreadFJPoolEstimateLibraryComplexity(){
         super();
     }
 
@@ -72,10 +71,6 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
                 opticalDuplicateFinder
         );
 
-        final int CORE_COUNT = 4 * 2;
-        BlockingQueue iterateQueue = new ArrayBlockingQueue(CORE_COUNT);
-
-        long startSortIterateTime = System.nanoTime();
         int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
         int streamable = streamReady / 10000;
 
@@ -85,6 +80,7 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
         ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
                 = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
 
+        long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
             final List<List<PairedReadSequence>> groupList = groupQueue.poll();
             pool.submit(() ->
@@ -157,53 +153,62 @@ public class ThreadPoolEstimateLibraryComplexity extends ThreadedEstimateLibrary
         sorter.cleanup();
 
         long startMetricFile = System.nanoTime();
-
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
+        ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
 
         for (final String library : duplicationHistosByLibrary.keySet())
         {
-            long startHistogram = System.nanoTime();
-
-            final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-            final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-            final DuplicationMetrics metrics = new DuplicationMetrics();
-            metrics.LIBRARY = library;
-
-            // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
-            for (final Integer bin : duplicationHisto.keySet())
+            pool.submit(() ->
             {
-                final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                final double opticalDuplicates = opticalHisto.get(bin) == null ? 0 : opticalHisto.get(bin).getValue();
+                final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                final DuplicationMetrics metrics = new DuplicationMetrics();
 
-                if (duplicateGroups >= MIN_GROUP_COUNT)
+                metrics.LIBRARY = library;
+
+                // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
+                for (final Integer bin : duplicationHisto.keySet())
                 {
-                    metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
-                    metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
-                    metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                    final double duplicateGroups = duplicationHisto.get(bin).getValue();
+                    final double opticalDuplicates = opticalHisto.get(bin) == null ? 0 : opticalHisto.get(bin).getValue();
+
+                    if (duplicateGroups >= MIN_GROUP_COUNT)
+                    {
+                        metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
+                        metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
+                        metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                    }
                 }
-            }
-            metrics.calculateDerivedFields();
-            file.addMetric(metrics);
-            file.addHistogram(duplicationHisto);
-/*
-            log.info("HISTOGRAM INFO - "
-                    + (double)(System.nanoTime() - startHistogram)
-                    + " LIBRARY : "
-                    + library
-                    + " | duplicationHisto SIZE : "
-                    + duplicationHisto.size()
-                    + " | opticalHisto SIZE : "
-                    + opticalHisto.size());
-*/
+                metrics.calculateDerivedFields();
+                queue.add(new HistoAndMetric(metrics, duplicationHisto));
+                /*
+                log.info("HISTOGRAM INFO - "
+                        + (double)(System.nanoTime() - startHistogram)
+                        + " LIBRARY : "
+                        + library
+                        + " | duplicationHisto SIZE : "
+                        + duplicationHisto.size()
+                        + " | opticalHisto SIZE : "
+                        + opticalHisto.size());
+                */
+            });
         }
 
-        double elcTime;
-        log.info("METRIC - THREAD POOL ELC (ms) : "
-                + ((double)((System.nanoTime() - startMetricFile)/1000000)));
+        pool.shutdown();
+        try {
+            pool.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
-        log.info("doWork - THREAD POOL ELC (ms) : "
-                + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info("TOTAL TIME - THREAD POOL ELC (ms) : " + (sortTime + elcTime));
+        queue.forEach((histoAndMetric -> {
+            file.addMetric(histoAndMetric.metrics);
+            file.addHistogram(histoAndMetric.duplicationHisto);
+        }));
+
+        long elcTime = System.nanoTime() / 1000000;
+        log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));
+        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + elcTime));
 
         file.write(OUTPUT);
         return 0;

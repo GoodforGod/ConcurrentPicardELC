@@ -19,13 +19,7 @@ import picard.sam.DuplicationMetrics;
 import java.io.File;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
-import java.util.stream.Collector;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
 import static java.lang.Math.pow;
 
@@ -37,9 +31,9 @@ import static java.lang.Math.pow;
         usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
         programGroup = Metrics.class
 )
-public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
+public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComplexity
 {
-    protected final Log log = Log.getInstance(ThreadedEstimateLibraryComplexity.class);
+    protected final Log log = Log.getInstance(ThreadExecutorEstimateLibraryComplexity.class);
 
     public class PairAndRec
     {
@@ -67,7 +61,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         }
     }
 
-    public ThreadedEstimateLibraryComplexity() {
+    public ThreadExecutorEstimateLibraryComplexity() {
         super();
     }
 
@@ -310,7 +304,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<String, Histogram<Integer>>();
 
         int groupsProcessed = 0;
-        long lastLogTime    = System.currentTimeMillis();
+        long lastLogTime = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
         ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
@@ -330,6 +324,7 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
         ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
                 = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
 
+        long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
             final List<List<PairedReadSequence>> groupList = groupQueue.poll();
             pool.submit(() ->
@@ -395,17 +390,19 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             }
         }
 
+        log.info("SORTER PROCESS - (ms) : "
+                + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+
         iterator.close();
         sorter.cleanup();
 
+        long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-
         ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
-        ExecutorService executorService = Executors.newCachedThreadPool();
 
         for (final String library : duplicationHistosByLibrary.keySet())
         {
-            executorService.submit(() ->
+            pool.submit(() ->
             {
                 final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
                 final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
@@ -431,10 +428,9 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             });
         }
 
-        executorService.shutdown();
-
+        pool.shutdown();
         try {
-            executorService.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
+            pool.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
@@ -444,10 +440,9 @@ public class ThreadedEstimateLibraryComplexity extends EstimateLibraryComplexity
             file.addHistogram(histoAndMetric.duplicationHisto);
         }));
 
-        double elcTime;
-        log.info("DUPLICATE - THREADED ELC (ms) : "
-                + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info("TOTAL TIME - THREADED ELC (ms) : " + (sortTime + elcTime));
+        long elcTime = System.nanoTime() / 1000000;
+        log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));
+        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + elcTime));
 
         file.write(OUTPUT);
         return 0;

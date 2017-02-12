@@ -7,23 +7,17 @@ package picard.sam.markduplicates;
  */
 
 import htsjdk.samtools.SAMReadGroupRecord;
-import htsjdk.samtools.SAMRecord;
-import htsjdk.samtools.SamReader;
-import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
-import picard.util.AtomicIterator;
 
-import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import static java.lang.Math.decrementExact;
@@ -37,7 +31,7 @@ import static java.lang.Math.pow;
         usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
         programGroup = Metrics.class
 )
-public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryComplexity
+public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLibraryComplexity
 {
     protected final Log log = Log.getInstance(StreamedEstimateLibraryComplexity.class);
 
@@ -95,6 +89,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
         ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
                 = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
 
+        long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
             final List<List<PairedReadSequence>> groupList = groupQueue.poll();
             pool.submit(() ->
@@ -147,11 +142,14 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
             }
         }
 
+        log.info("SORTER PROCESS - (ms) : "
+                + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+
         iterator.close();
         sorter.cleanup();
 
+        long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-
         ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
 
         for (final String library : duplicationHistosByLibrary.keySet()) {
@@ -181,12 +179,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
             });
         }
 
-        double elcTime = System.nanoTime();
-        log.info("DUPLICATE - STREAMED ELC (ms) : " + (double)(elcTime - startTime)/1000000);
-        log.info("TOTAL TIME - STREAMED ELC (ms) : " + (double)(sortTime + elcTime)/1000000);
-
         pool.shutdown();
-
         try {
             pool.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
         } catch (InterruptedException e) {
@@ -198,7 +191,10 @@ public class StreamedEstimateLibraryComplexity extends ThreadedEstimateLibraryCo
             file.addHistogram(histoAndMetric.duplicationHisto);
         }));
 
-        pool.shutdown();
+        long elcTime = System.nanoTime() / 1000000;
+        log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));
+        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + (elcTime - startTime/1000000)));
+
         file.write(OUTPUT);
         return 0;
     }
