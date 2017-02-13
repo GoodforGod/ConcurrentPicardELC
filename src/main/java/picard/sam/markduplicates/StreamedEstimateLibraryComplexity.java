@@ -51,7 +51,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ELCSortResponse response = doSmartSort(useBarcodes);
+        final ELCSortResponse response = doStreamSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
@@ -85,9 +85,8 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
 
         ForkJoinPool pool = new ForkJoinPool();
 
-        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>();
-        BlockingQueue<List<List<PairedReadSequence>>> groupQueue
-                = new LinkedBlockingQueue<>();
+        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>(streamable);
+        BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
 
         long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
