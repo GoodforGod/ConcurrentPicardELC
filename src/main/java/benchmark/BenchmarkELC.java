@@ -6,6 +6,7 @@ package benchmark;
  * Time: 17:17
  */
 
+import picard.sam.markduplicates.EstimateLibraryComplexity;
 import picard.sam.markduplicates.StreamedEstimateLibraryComplexity;
 import picard.sam.markduplicates.ThreadExecutorEstimateLibraryComplexity;
 import picard.sam.markduplicates.ThreadFJPoolEstimateLibraryComplexity;
@@ -22,7 +23,7 @@ public class BenchmarkELC
     public static void main(String[] args)
     {
         //new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
-        new StreamedEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
+        new ThreadExecutorEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 
     private static void Filalize() {

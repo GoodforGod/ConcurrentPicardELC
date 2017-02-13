@@ -85,36 +85,41 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
 
         ForkJoinPool pool = new ForkJoinPool();
 
-        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<List<PairedReadSequence>>();
-        ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
-                = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
+        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>();
+        BlockingQueue<List<List<PairedReadSequence>>> groupQueue
+                = new LinkedBlockingQueue<>();
 
         long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
-            final List<List<PairedReadSequence>> groupList = groupQueue.poll();
-            pool.submit(() ->
-            {
-                groupList.stream()
-                        .parallel()
-                        .unordered()
-                        .map(grps -> splitByLibrary(grps, readGroups))
-                        .flatMap(entry -> entry.entrySet().stream())
-                        .forEach(entry -> {
-                            final String library = entry.getKey();
-                            final List<PairedReadSequence> seqs = entry.getValue();
+            try {
+                final List<List<PairedReadSequence>> groupList = groupQueue.take();
+                pool.submit(() ->
+                {
+                    groupList.stream()
+                            .parallel()
+                            .unordered()
+                            .map(grps -> splitByLibrary(grps, readGroups))
+                            .flatMap(entry -> entry.entrySet().stream())
+                            .forEach(entry -> {
+                                final String library = entry.getKey();
+                                final List<PairedReadSequence> seqs = entry.getValue();
 
-                            Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                            Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                                Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                                Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
 
-                            if (duplicationHisto == null) {
-                                duplicationHisto = new Histogram<>("duplication_group_count", library);
-                                opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                                duplicationHistosByLibrary.put(library, duplicationHisto);
-                                opticalHistosByLibrary.put(library, opticalHisto);
-                            }
-                            algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                        });
-            });
+                                if (duplicationHisto == null) {
+                                    duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                    opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                    duplicationHistosByLibrary.put(library, duplicationHisto);
+                                    opticalHistosByLibrary.put(library, opticalHisto);
+                                }
+                                algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                            });
+                });
+            }
+            catch (InterruptedException ex){
+                ex.printStackTrace();
+            }
         });
 
         while (iterator.hasNext()) {
@@ -136,7 +141,11 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
 
                 if(temporaryGroups.size() >= streamable || !iterator.hasNext())
                 {
-                    groupQueue.add(new ArrayList<>(temporaryGroups));
+                    try {
+                        groupQueue.put(new ArrayList<>(temporaryGroups));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
                     temporaryGroups.clear();
                 }
             }
@@ -150,7 +159,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
 
         long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-        ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
+        BlockingQueue<HistoAndMetric> queue = new LinkedBlockingDeque<>();
 
         for (final String library : duplicationHistosByLibrary.keySet()) {
             pool.execute(() ->
@@ -181,15 +190,16 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
 
         pool.shutdown();
         try {
-            pool.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
+            pool.awaitTermination(groupsProcessed / 1000, TimeUnit.MINUTES);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
 
-        queue.forEach((histoAndMetric -> {
+        for(HistoAndMetric histoAndMetric : queue)
+        {
             file.addMetric(histoAndMetric.metrics);
             file.addHistogram(histoAndMetric.duplicationHisto);
-        }));
+        }
 
         long elcTime = System.nanoTime() / 1000000;
         log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));

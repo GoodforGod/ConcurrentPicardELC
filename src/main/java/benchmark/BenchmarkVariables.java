@@ -14,7 +14,7 @@ public class BenchmarkVariables
     public static final int CORES = 4;
 
     public static final String IN_FILE_PATH = "C:\\data\\bam\\na_s.bam";
-    public static final String OUT_FILE_PATH = "C:\\data\\bam\\na_s_out.txt";
+    public static final String OUT_FILE_PATH = "C:\\data\\bam\\out_na_s.txt";
 
     public static final String[] small_bam_args = new String[]
                         {

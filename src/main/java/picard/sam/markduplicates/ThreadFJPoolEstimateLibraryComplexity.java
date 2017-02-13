@@ -76,49 +76,53 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
 
         ForkJoinPool pool = new ForkJoinPool();
 
-        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<List<PairedReadSequence>>();
-        ConcurrentLinkedQueue<List<List<PairedReadSequence>>> groupQueue
-                = new ConcurrentLinkedQueue<List<List<PairedReadSequence>>>();
+        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>();
+        BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
 
         long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
-            final List<List<PairedReadSequence>> groupList = groupQueue.poll();
-            pool.submit(() ->
-            {
-                for(List<PairedReadSequence> groupPairs : groupList) {
-                    long startWork = System.nanoTime();
-                    // Get the next group and split it apart by library
-                    final List<PairedReadSequence> group = getNextGroup(iterator);
+            try {
+                final List<List<PairedReadSequence>> groupList = groupQueue.take();
+                pool.submit(() ->
+                {
+                    for (List<PairedReadSequence> groupPairs : groupList) {
+                        long startWork = System.nanoTime();
+                        // Get the next group and split it apart by library
+                        final List<PairedReadSequence> group = getNextGroup(iterator);
 
-                    if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
-                        final PairedReadSequence prs = group.get(0);
-                        log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
-                                "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
-                                StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
-                                " / " +
-                                StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
-                    } else {
-                        final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
+                        if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
+                            final PairedReadSequence prs = group.get(0);
+                            log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
+                                    "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
+                                    StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
+                                    " / " +
+                                    StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+                        } else {
+                            final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
 
-                        // Now process the reads by library
-                        for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
-                            final String library = entry.getKey();
-                            final List<PairedReadSequence> seqs = entry.getValue();
+                            // Now process the reads by library
+                            for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
+                                final String library = entry.getKey();
+                                final List<PairedReadSequence> seqs = entry.getValue();
 
-                            Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                            Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                                Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                                Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
 
-                            if (duplicationHisto == null) {
-                                duplicationHisto = new Histogram<>("duplication_group_count", library);
-                                opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                                duplicationHistosByLibrary.put(library, duplicationHisto);
-                                opticalHistosByLibrary.put(library, opticalHisto);
+                                if (duplicationHisto == null) {
+                                    duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                    opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                    duplicationHistosByLibrary.put(library, duplicationHisto);
+                                    opticalHistosByLibrary.put(library, opticalHisto);
+                                }
+                                algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
                             }
-                            algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
                         }
                     }
-                }
-            });
+                });
+            }
+            catch (InterruptedException ex) {
+                ex.printStackTrace();
+            }
         });
 
         while (iterator.hasNext()) {
@@ -140,7 +144,11 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
 
                 if(temporaryGroups.size() >= streamable || !iterator.hasNext())
                 {
-                    groupQueue.add(new ArrayList<>(temporaryGroups));
+                    try {
+                        groupQueue.put(new ArrayList<>(temporaryGroups));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
                     temporaryGroups.clear();
                 }
             }
@@ -154,11 +162,11 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
 
         long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-        ConcurrentLinkedQueue<HistoAndMetric> queue = new ConcurrentLinkedQueue<HistoAndMetric>();
+        BlockingQueue<HistoAndMetric> queue = new LinkedBlockingDeque<>();
 
         for (final String library : duplicationHistosByLibrary.keySet())
         {
-            pool.submit(() ->
+            pool.execute(() ->
             {
                 final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
                 final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
@@ -181,6 +189,7 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
                 }
                 metrics.calculateDerivedFields();
                 queue.add(new HistoAndMetric(metrics, duplicationHisto));
+
                 /*
                 log.info("HISTOGRAM INFO - "
                         + (double)(System.nanoTime() - startHistogram)
@@ -196,15 +205,16 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
 
         pool.shutdown();
         try {
-            pool.awaitTermination(groupsProcessed / 10000, TimeUnit.MINUTES);
+            pool.awaitTermination(groupsProcessed / 1000, TimeUnit.MINUTES);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
 
-        queue.forEach((histoAndMetric -> {
+        for(HistoAndMetric histoAndMetric : queue)
+        {
             file.addMetric(histoAndMetric.metrics);
             file.addHistogram(histoAndMetric.duplicationHisto);
-        }));
+        }
 
         long elcTime = System.nanoTime() / 1000000;
         log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));
