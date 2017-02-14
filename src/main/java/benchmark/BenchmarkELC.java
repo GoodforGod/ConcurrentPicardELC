@@ -23,7 +23,7 @@ public class BenchmarkELC
     public static void main(String[] args)
     {
         //new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
-        new ThreadExecutorEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
+        new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 
     private static void Filalize() {
