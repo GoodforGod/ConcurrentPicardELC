@@ -9,21 +9,20 @@ package picard.sam.markduplicates;
 import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
+import org.openjdk.jmh.annotations.Fork;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.lang.Math.pow;
 
 /*
- * DEFAULT COMMENT
+ * FJPOOL Implementation of ELC
  */
 @CommandLineProgramProperties(
         usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,
@@ -39,32 +38,31 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
     }
 
     protected int doWork() {
-
         IOUtil.assertFilesAreReadable(INPUT);
 
         final boolean useBarcodes   = (null != BARCODE_TAG
                 || null != READ_ONE_BARCODE_TAG
                 || null != READ_TWO_BARCODE_TAG);
 
+        // Results from the doSort
         final ElcSmartSortResponse response = doSmartSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
-        final ConcurrentSortingCollection<PairedReadSequence> sorter = response.getSorter();
-        final ProgressLogger progress = response.getProgress();
-        final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
+        final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
+        final ProgressLogger                                  progress   = response.getProgress();
+        final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new HashMap<String, Histogram<Integer>>();
-        final Map<String, Histogram<Integer>> opticalHistosByLibrary = new HashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> opticalHistosByLibrary     = new ConcurrentHashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<String, Histogram<Integer>>();
 
-        int groupsProcessed = 0;
-        long lastLogTime = System.currentTimeMillis();
+        final AtomicInteger groupsProcessed = new AtomicInteger(0);
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
-        ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
+        final ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
                 MAX_DIFF_RATE,
                 MAX_READ_LENGTH,
                 MIN_IDENTICAL_BASES,
@@ -72,102 +70,121 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
                 opticalDuplicateFinder
         );
 
-        int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
-        int streamable = streamReady / 10000;
+        final int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
+        final int streamable = streamReady / 10000;
 
-        ForkJoinPool pool = new ForkJoinPool();
+        final ForkJoinPool groupPool = new ForkJoinPool();
 
-        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>();
-        BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
+        // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
+        final AtomicInteger locker = new AtomicInteger(0);
+        final Object sync = new Object();
+        final BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>(2);
 
-        long startSortIterateTime = System.nanoTime();
-        pool.execute(() -> {
-            try {
-                final List<List<PairedReadSequence>> groupList = groupQueue.take();
-                pool.submit(() ->
-                {
-                    for (List<PairedReadSequence> groupPairs : groupList) {
-                        long startWork = System.nanoTime();
-                        // Get the next group and split it apart by library
-                        final List<PairedReadSequence> group = getNextGroup(iterator);
+        List<List<PairedReadSequence>> groupStack = new ArrayList<>();
 
-                        if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
-                            final PairedReadSequence prs = group.get(0);
-                            log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
-                                    "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
-                                    StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
-                                    " / " +
-                                    StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
-                        } else {
-                            final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
+        final long startSortIterateTime = System.nanoTime();
+        // pool manager, receives stack of groups, and make worker to process them
+        groupPool.execute(() -> {
+            while (!Thread.interrupted()) {
+                try {
+                    final List<List<PairedReadSequence>> groupList = groupQueue.take();
+                    groupPool.submit(() ->
+                    {
+                        for (List<PairedReadSequence> group : groupList) {
 
-                            // Now process the reads by library
-                            for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
-                                final String library = entry.getKey();
-                                final List<PairedReadSequence> seqs = entry.getValue();
+                            // Get the next group and split it apart by library
+                            if (group.size() > meanGroupSize * MAX_GROUP_RATIO) {
+                                final PairedReadSequence prs = group.get(0);
+                                log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
+                                        "Mean=" + meanGroupSize + ", Actual=" + group.size() + ". Prefixes: " +
+                                        StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES) +
+                                        " / " +
+                                        StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
+                            } else {
+                                final Map<String, List<PairedReadSequence>> sequencesByLibrary = splitByLibrary(group, readGroups);
 
-                                Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                                Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                                // Now process the reads by library
+                                for (final Map.Entry<String, List<PairedReadSequence>> entry : sequencesByLibrary.entrySet()) {
+                                    final String library = entry.getKey();
+                                    final List<PairedReadSequence> seqs = entry.getValue();
 
-                                if (duplicationHisto == null) {
-                                    duplicationHisto = new Histogram<>("duplication_group_count", library);
-                                    opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                                    duplicationHistosByLibrary.put(library, duplicationHisto);
-                                    opticalHistosByLibrary.put(library, opticalHisto);
+                                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+
+                                    if (duplicationHisto == null) {
+                                        duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                        duplicationHistosByLibrary.put(library, duplicationHisto);
+                                        opticalHistosByLibrary.put(library, opticalHisto);
+                                    }
+                                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
                                 }
-                                algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                                groupsProcessed.incrementAndGet();
                             }
                         }
-                    }
-                });
-            }
-            catch (InterruptedException ex) {
-                ex.printStackTrace();
+                        locker.decrementAndGet();
+                    });
+                } catch (InterruptedException ex) {
+                    ex.printStackTrace();
+                }
             }
         });
 
+        // Iterating through sorted groups, and making stack to process them
         while (iterator.hasNext()) {
-            final List<PairedReadSequence> group = getNextGroup(iterator);
+            try {
+                groupStack.add(getNextGroup(iterator));
 
-            if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
-            {
-                final PairedReadSequence prs = group.get(0);
-                log.warn("Omitting group with over " + MAX_GROUP_RATIO
-                        + " times the expected mean number of read pairs. Mean=" + meanGroupSize
-                        + ", Actual="    + group.size()
-                        + ". Prefixes: " + StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES)
-                        + " / "          + StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
-            }
-            else
-            {
-                groupsProcessed++;
-                temporaryGroups.add(group);
-
-                if(temporaryGroups.size() >= streamable || !iterator.hasNext())
+                if(groupStack.size() >= 50000)
                 {
                     try {
-                        groupQueue.put(new ArrayList<>(temporaryGroups));
+                        groupQueue.put(groupStack);
+                        locker.incrementAndGet();
+                        groupStack = new ArrayList<>(streamable);
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
-                    temporaryGroups.clear();
+                }
+            }
+            catch (NoSuchElementException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // Waiting for all threads finish their job and check for missed group stacks
+        while (locker.get() != 0) {
+            if (!groupStack.isEmpty()) {
+                try {
+                    groupQueue.put(groupStack);
+                    locker.incrementAndGet();
+                    groupStack = new ArrayList<>();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
                 }
             }
         }
 
-        log.info("SORTER PROCESS - (ms) : "
-                + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+        // Shutting pool down after all work is finished
+        groupPool.shutdown();
+        try {
+            groupPool.awaitTermination(1, TimeUnit.MICROSECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        log.info("SORTER PROCESSED FJPOOL - (ms) : " + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
 
         iterator.close();
         sorter.cleanup();
 
         long startMetricFile = System.nanoTime();
+
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-        BlockingQueue<HistoAndMetric> queue = new LinkedBlockingDeque<>();
+        final ForkJoinPool histoPool = new ForkJoinPool();
 
         for (final String library : duplicationHistosByLibrary.keySet())
         {
-            pool.execute(() ->
+            histoPool.execute(() ->
             {
                 final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
                 final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
@@ -179,47 +196,35 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
                 for (final Integer bin : duplicationHisto.keySet())
                 {
                     final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                    final double opticalDuplicates = opticalHisto.get(bin) == null ? 0 : opticalHisto.get(bin).getValue();
+                    final double opticalDuplicates = opticalHisto.get(bin) == null
+                            ? 0
+                            : opticalHisto.get(bin).getValue();
 
-                    if (duplicateGroups >= MIN_GROUP_COUNT)
-                    {
+                    if (duplicateGroups >= MIN_GROUP_COUNT) {
                         metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
                         metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
                         metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
                     }
                 }
                 metrics.calculateDerivedFields();
-                queue.add(new HistoAndMetric(metrics, duplicationHisto));
 
-                /*
-                log.info("HISTOGRAM INFO - "
-                        + (double)(System.nanoTime() - startHistogram)
-                        + " LIBRARY : "
-                        + library
-                        + " | duplicationHisto SIZE : "
-                        + duplicationHisto.size()
-                        + " | opticalHisto SIZE : "
-                        + opticalHisto.size());
-                */
+                synchronized (sync) {
+                    file.addMetric(metrics);
+                    file.addHistogram(duplicationHisto);
+                }
             });
         }
 
-        pool.shutdown();
+        histoPool.shutdown();
         try {
-            pool.awaitTermination(1, TimeUnit.MILLISECONDS);
+            histoPool.awaitTermination( 1, TimeUnit.MICROSECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }
 
-        for(HistoAndMetric histoAndMetric : queue)
-        {
-            file.addMetric(histoAndMetric.metrics);
-            file.addHistogram(histoAndMetric.duplicationHisto);
-        }
-
-        long elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));
-        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + elcTime));
+        double elcTime = System.nanoTime() / 1000000;
+        log.info("METRIC - FJPOOL ELC (ms) : " + ((elcTime - (double)startMetricFile / 1000000)));
+        log.info("TOTAL - FJPOOL ELC (ms) : " + (sortTime + (elcTime - (double)startTime / 1000000)));
 
         file.write(OUTPUT);
         return 0;

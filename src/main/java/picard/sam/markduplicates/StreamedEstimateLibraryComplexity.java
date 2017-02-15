@@ -12,12 +12,14 @@ import htsjdk.samtools.util.*;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
+import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import static java.lang.Math.decrementExact;
@@ -51,11 +53,11 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ElcSortResponse response = doStreamSort(useBarcodes);
+        final ElcSmartSortResponse response = doStreamSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
-        final SortingCollection<PairedReadSequence> sorter = response.getSorter();
+        final ConcurrentSortingCollection<PairedReadSequence> sorter = response.getSorter();
         final ProgressLogger progress = response.getProgress();
         final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
 
@@ -83,37 +85,39 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
         int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
         int streamable = streamReady / 10000;
 
-        ForkJoinPool pool = new ForkJoinPool();
+        final ForkJoinPool pool = new ForkJoinPool();
+        final BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
+        final AtomicInteger locker = new AtomicInteger(0);
 
-        final List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>(streamable);
-        BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
+        List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>(streamable);
 
         long startSortIterateTime = System.nanoTime();
+        // Pool process sorted groups
         pool.execute(() -> {
             try {
                 final List<List<PairedReadSequence>> groupList = groupQueue.take();
-                pool.submit(() ->
-                {
-                    groupList.stream()
-                            .parallel()
-                            .unordered()
-                            .map(grps -> splitByLibrary(grps, readGroups))
-                            .flatMap(entry -> entry.entrySet().stream())
-                            .forEach(entry -> {
-                                final String library = entry.getKey();
-                                final List<PairedReadSequence> seqs = entry.getValue();
+                pool.submit(() -> {
+                        groupList.stream()
+                                .parallel()
+                                .unordered()
+                                .map(grps -> splitByLibrary(grps, readGroups))
+                                .flatMap(entry -> entry.entrySet().stream())
+                                .forEach(entry -> {
+                                    final String library = entry.getKey();
+                                    final List<PairedReadSequence> seqs = entry.getValue();
 
-                                Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                                Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
+                                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
 
-                                if (duplicationHisto == null) {
-                                    duplicationHisto = new Histogram<>("duplication_group_count", library);
-                                    opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                                    duplicationHistosByLibrary.put(library, duplicationHisto);
-                                    opticalHistosByLibrary.put(library, opticalHisto);
-                                }
-                                algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                            });
+                                    if (duplicationHisto == null) {
+                                        duplicationHisto = new Histogram<>("duplication_group_count", library);
+                                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
+                                        duplicationHistosByLibrary.put(library, duplicationHisto);
+                                        opticalHistosByLibrary.put(library, opticalHisto);
+                                    }
+                                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
+                                });
+                        locker.decrementAndGet();
                 });
             }
             catch (InterruptedException ex){
@@ -137,15 +141,27 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
             {
                 ++groupsProcessed;
                 temporaryGroups.add(group);
-
-                if(temporaryGroups.size() >= streamable || !iterator.hasNext())
+                if(temporaryGroups.size() >= streamable)
                 {
                     try {
-                        groupQueue.put(new ArrayList<>(temporaryGroups));
+                        groupQueue.put(temporaryGroups);
+                        locker.incrementAndGet();
+                        temporaryGroups = new ArrayList<>(streamable);
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
-                    temporaryGroups.clear();
+                }
+            }
+        }
+
+        while (locker.get() != 0) {
+            if (!temporaryGroups.isEmpty()) {
+                try {
+                    groupQueue.put(temporaryGroups);
+                    locker.incrementAndGet();
+                    temporaryGroups = new ArrayList<>();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
                 }
             }
         }

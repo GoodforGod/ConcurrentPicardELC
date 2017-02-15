@@ -210,11 +210,11 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
     /**
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
-    private void spillToDisk(T[] buffer, int numRecordsInRam) {
+    private void spillToDisk(final T[] buffer, int numRecordsInRam) {
 
         try {
             final File f = newTempFile();
-            OutputStream os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);;
+            OutputStream os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
 
             try {
                 this.codec.setOutputStream(os);
