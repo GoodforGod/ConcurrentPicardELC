@@ -51,7 +51,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ELCSortResponse response = doStreamSort(useBarcodes);
+        final ElcSortResponse response = doStreamSort(useBarcodes);
 
         long startTime = System.nanoTime();
 

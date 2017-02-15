@@ -12,6 +12,7 @@ import htsjdk.samtools.util.*;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
+import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -45,11 +46,11 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
                 || null != READ_ONE_BARCODE_TAG
                 || null != READ_TWO_BARCODE_TAG);
 
-        final ELCSortResponse response = doSmartSort(useBarcodes);
+        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
-        final SortingCollection<PairedReadSequence> sorter = response.getSorter();
+        final ConcurrentSortingCollection<PairedReadSequence> sorter = response.getSorter();
         final ProgressLogger progress = response.getProgress();
         final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
 
@@ -205,7 +206,7 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
 
         pool.shutdown();
         try {
-            pool.awaitTermination(groupsProcessed / 1000, TimeUnit.MINUTES);
+            pool.awaitTermination(1, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }

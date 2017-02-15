@@ -38,8 +38,6 @@ import htsjdk.samtools.util.ProgressLogger;
 import htsjdk.samtools.util.SequenceUtil;
 import htsjdk.samtools.util.SortingCollection;
 import htsjdk.samtools.util.StringUtil;
-import org.openjdk.jmh.annotations.Benchmark;
-import org.openjdk.jmh.annotations.State;
 import picard.PicardException;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.Option;
@@ -435,7 +433,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
     protected double sortTime;
 
     // To benchmark perfomance while sort part is active
-    protected ELCSortResponse doSort(boolean useBarcodes)
+    protected ElcSortResponse doSort(boolean useBarcodes)
     {
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
@@ -521,10 +519,10 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         }
 
         log.info("SORTING - DEFAULT ELC (ms) : "
-                + (sortTime = (double)((System.nanoTime()-startTime)/1000000)));
+                + (sortTime = (double)((System.nanoTime() - startTime) / 1000000)));
 
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
-        return new ELCSortResponse(sorter, readGroups, progress);
+        return new ElcSortResponse(sorter, readGroups, progress);
     }
 
     /**
@@ -538,7 +536,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         final boolean useBarcodes = (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG);
 
-        final ELCSortResponse response = doSort(useBarcodes);
+        final ElcSortResponse response = doSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
@@ -563,6 +561,8 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
                 useBarcodes,
                 opticalDuplicateFinder
         );
+
+        final long startSortIterateTime = System.nanoTime();
 
         while (iterator.hasNext()) {
             // Get the next group and split it apart by library
@@ -603,8 +603,12 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             }
         }
 
+        log.info("SORTER PROCESS - (ms) : " + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+
         iterator.close();
         sorter.cleanup();
+
+        long startMetricFile = System.nanoTime();
 
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
         for (final String library : duplicationHistosByLibrary.keySet()) {
@@ -631,13 +635,11 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
         }
 
-        double elcTime;
-        log.info("DUPLICATE - DEFAULT ELC (ms) : "
-                + (elcTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info("TOTAL TIME - DEFAULT ELC (ms) : " + (sortTime + elcTime));
+        double elcTime = System.nanoTime() / 1000000;
+        log.info("METRIC - THREAD POOL ELC (ms) : " + ((elcTime - (double)startMetricFile / 1000000)));
+        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + (elcTime - (double)startTime / 1000000)));
 
         file.write(OUTPUT);
-
         return 0;
     }
 
