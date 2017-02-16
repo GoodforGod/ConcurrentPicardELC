@@ -182,9 +182,9 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         static final int NUMBER_BASES_IN_READ = 150;
 
         short readGroup = -1;
-        boolean qualityOk = true;
-        byte[] read1;
-        byte[] read2;
+        volatile boolean qualityOk = true;
+        volatile byte[] read1;
+        volatile byte[] read2;
         short libraryId;
 
         // Hashes corresponding to read1 and read2
@@ -381,14 +381,24 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         public int compare(final PairedReadSequence lhs, final PairedReadSequence rhs) {
             // First compare the first N bases of the first read
             for (int i = 0; i < BASES; ++i) {
+              /*  if(lhs.read1 == null || rhs.read1 == null) {
+                    System.out.println("READ NULL");
+                    return 1;
+                }*/
                 final int retval = lhs.read1[i] - rhs.read1[i];
-                if (retval != 0) return retval;
+                if (retval != 0)
+                    return retval;
             }
 
             // Then compare the first N bases of the second read
             for (int i = 0; i < BASES; ++i) {
+             /*   if(lhs.read2 == null || rhs.read2 == null) {
+                    System.out.println("READ NULL");
+                    return 1;
+                }*/
                 final int retval = lhs.read2[i] - rhs.read2[i];
-                if (retval != 0) return retval;
+                if (retval != 0)
+                    return retval;
             }
 
             return 0;

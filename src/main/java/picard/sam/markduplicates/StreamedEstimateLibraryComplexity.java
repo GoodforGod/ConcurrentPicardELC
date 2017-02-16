@@ -53,7 +53,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ElcSmartSortResponse response = doStreamSort(useBarcodes);
+        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
@@ -62,14 +62,14 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
         final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
-        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());
+        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new HashMap<String, Histogram<Integer>>();
-        final Map<String, Histogram<Integer>> opticalHistosByLibrary = new HashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<>();
+        final Map<String, Histogram<Integer>> opticalHistosByLibrary = new ConcurrentHashMap<>();
 
         int groupsProcessed = 0;
 
-        long lastLogTime = System.currentTimeMillis();
+        //long lastLogTime = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
         ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
@@ -80,10 +80,10 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                 opticalDuplicateFinder
         );
 
-        Predicate<List<PairedReadSequence>> pairFilter = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
+        //Predicate<List<PairedReadSequence>> pairFilter = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
 
         int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
-        int streamable = streamReady / 10000;
+        int streamable = streamReady / 1000;
 
         final ForkJoinPool pool = new ForkJoinPool();
         final BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
@@ -94,9 +94,10 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
         long startSortIterateTime = System.nanoTime();
         // Pool process sorted groups
         pool.execute(() -> {
-            try {
-                final List<List<PairedReadSequence>> groupList = groupQueue.take();
-                pool.submit(() -> {
+            while (!Thread.interrupted()) {
+                try {
+                    final List<List<PairedReadSequence>> groupList = groupQueue.take();
+                    pool.submit(() -> {
                         groupList.stream()
                                 .parallel()
                                 .unordered()
@@ -118,10 +119,10 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                                     algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
                                 });
                         locker.decrementAndGet();
-                });
-            }
-            catch (InterruptedException ex){
-                ex.printStackTrace();
+                    });
+                } catch (InterruptedException ex) {
+                    ex.printStackTrace();
+                }
             }
         });
 
@@ -154,29 +155,34 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
             }
         }
 
-        while (locker.get() != 0) {
-            if (!temporaryGroups.isEmpty()) {
-                try {
-                    groupQueue.put(temporaryGroups);
-                    locker.incrementAndGet();
-                    temporaryGroups = new ArrayList<>();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
+        if (!temporaryGroups.isEmpty()) {
+            try {
+                groupQueue.put(temporaryGroups);
+                locker.incrementAndGet();
+                temporaryGroups = new ArrayList<>();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
         }
 
-        log.info("SORTER PROCESS - (ms) : "
+        while (locker.get() != 0) {
+          if(locker.get() == 0)
+              break;
+        }
+
+        log.info("SORTER - STREAMED (ms) : "
                 + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
 
         iterator.close();
         sorter.cleanup();
 
-        long startMetricFile = System.nanoTime();
+        final long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-        BlockingQueue<HistoAndMetric> queue = new LinkedBlockingDeque<>();
+
+        final Object sync = new Object();
 
         for (final String library : duplicationHistosByLibrary.keySet()) {
+            locker.incrementAndGet();
             pool.execute(() ->
             {
                 final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
@@ -188,9 +194,9 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
 
                 for (final Integer bin : duplicationHisto.keySet()) {
                     final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                    final double opticalDuplicates = opticalHisto.get(bin) == null
-                            ? 0
-                            : opticalHisto.get(bin).getValue();
+                    final double opticalDuplicates = (opticalHisto.get(bin) == null)
+                                                   ? 0
+                                                   : opticalHisto.get(bin).getValue();
 
                     if (duplicateGroups >= MIN_GROUP_COUNT) {
                         metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
@@ -199,21 +205,24 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
                     }
                 }
                 metrics.calculateDerivedFields();
-                queue.add(new HistoAndMetric(metrics, duplicationHisto));
+                synchronized (sync) {
+                    file.addMetric(metrics);
+                    file.addHistogram(duplicationHisto);
+                }
+                locker.decrementAndGet();
             });
+        }
+
+        while (locker.get() != 0) {
+          if(locker.get() == 0)
+              break;
         }
 
         pool.shutdown();
         try {
-            pool.awaitTermination(groupsProcessed / 1000, TimeUnit.MINUTES);
+            pool.awaitTermination(1, TimeUnit.MICROSECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
-        }
-
-        for(HistoAndMetric histoAndMetric : queue)
-        {
-            file.addMetric(histoAndMetric.metrics);
-            file.addHistogram(histoAndMetric.duplicationHisto);
         }
 
         long elcTime = System.nanoTime() / 1000000;

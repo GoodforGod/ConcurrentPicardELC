@@ -8,6 +8,7 @@ package picard.sam.markduplicates.util;
 
 import htsjdk.samtools.Defaults;
 import htsjdk.samtools.util.*;
+import picard.sam.markduplicates.EstimateLibraryComplexity;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -18,14 +19,9 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Serializable;
 import java.lang.reflect.Array;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Comparator;
-import java.util.Iterator;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.TreeSet;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 /**
  * Collection to which many records can be added.  After all records are added, the collection can be
@@ -155,6 +151,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             if (numRecordsInRam == maxRecordsInRam) {
                 final T[] buffer = ramRecords;
                 ramRecords = (T[]) Array.newInstance(componentType, maxRecordsInRam);
+                spillInProgress.incrementAndGet();
                 new Thread(() -> spillToDisk(buffer, numRecordsInRam)).start();
                 numRecordsInRam = 0;
             }
@@ -169,18 +166,16 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
      * because iterator() triggers the same freeing.
      */
     public void doneAdding() {
-        if (this.cleanedUp) {
+        if (this.cleanedUp)
             throw new IllegalStateException("Cannot call doneAdding() after cleanup() was called.");
-        }
-        if (doneAdding) {
+
+        if (doneAdding)
             return;
-        }
 
         doneAdding = true;
 
-        if (this.files.isEmpty()) {
+        if (this.files.isEmpty())
             return;
-        }
 
         if (this.numRecordsInRam > 0) {
             spillToDisk(ramRecords, numRecordsInRam);
@@ -207,6 +202,12 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         this.destructiveIteration = destructiveIteration;
     }
 
+    private final AtomicInteger spillInProgress = new AtomicInteger(0);
+
+    public boolean isSpillToDiskInProgress() {
+        return spillInProgress.get() != 0;
+    }
+
     /**
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
@@ -218,7 +219,13 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
 
             try {
                 this.codec.setOutputStream(os);
-                Arrays.stream(buffer).unordered().parallel().sorted(this.comparator).forEachOrdered(this.codec::encode);
+                // Somehow this stream stucks on the doneAdding and only after that method, wtf
+                // d, wtf
+                // Arrays.stream(buffer).parallel().sorted(this.comparator).forEachOrdered(this.codec::encode);
+                for (int i = 0; i < numRecordsInRam; ++i) {
+                    this.codec.encode(buffer[i]);
+                    buffer[i] = null;
+                }
                 os.flush();
             }
             catch (RuntimeIOException e) {
@@ -226,16 +233,17 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
                         ".  Try setting TMP_DIR to a file system with lots of space.", e);
             }
             finally {
-                if (os != null) {
+                if (os != null)
                     os.close();
-                }
+                if(spillInProgress.get() > 0)
+                    spillInProgress.decrementAndGet();
             }
             this.files.add(f);
         }
         catch (IOException e){
+            spillInProgress.decrementAndGet();
             throw new RuntimeIOException(e);
         }
-
 
 /*        try {
             Arrays.sort(buffer, 0, numRecordsInRam, this.comparator);
@@ -384,11 +392,14 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         }
 
         public T next() {
-            if (!hasNext()) {
+            if (!hasNext())
                 throw new NoSuchElementException();
-            }
+
             T ret = ConcurrentSortingCollection.this.ramRecords[iterationIndex];
-            if (destructiveIteration) ConcurrentSortingCollection.this.ramRecords[iterationIndex] = null;
+
+            if (destructiveIteration)
+                ConcurrentSortingCollection.this.ramRecords[iterationIndex] = null;
+
             ++iterationIndex;
             return ret;
         }

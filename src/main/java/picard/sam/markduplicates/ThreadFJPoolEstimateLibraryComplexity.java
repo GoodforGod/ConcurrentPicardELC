@@ -73,7 +73,7 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
         final int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
         final int streamable = streamReady / 10000;
 
-        final ForkJoinPool groupPool = new ForkJoinPool();
+        final ForkJoinPool pool = new ForkJoinPool();
 
         // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
         final AtomicInteger locker = new AtomicInteger(0);
@@ -84,11 +84,11 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
 
         final long startSortIterateTime = System.nanoTime();
         // pool manager, receives stack of groups, and make worker to process them
-        groupPool.execute(() -> {
+        pool.execute(() -> {
             while (!Thread.interrupted()) {
                 try {
                     final List<List<PairedReadSequence>> groupList = groupQueue.take();
-                    groupPool.submit(() ->
+                    pool.submit(() ->
                     {
                         for (List<PairedReadSequence> group : groupList) {
 
@@ -151,25 +151,20 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
             }
         }
 
-        // Waiting for all threads finish their job and check for missed group stacks
-        while (locker.get() != 0) {
-            if (!groupStack.isEmpty()) {
-                try {
-                    groupQueue.put(groupStack);
-                    locker.incrementAndGet();
-                    groupStack = new ArrayList<>();
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
+        if (!groupStack.isEmpty()) {
+            try {
+                groupQueue.put(groupStack);
+                locker.incrementAndGet();
+                groupStack = new ArrayList<>();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
             }
         }
 
-        // Shutting pool down after all work is finished
-        groupPool.shutdown();
-        try {
-            groupPool.awaitTermination(1, TimeUnit.MICROSECONDS);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
+        // Waiting for all threads finish their job and check for missed group stacks
+        while (locker.get() != 0) {
+           if(locker.get() == 0)
+               break;
         }
 
         log.info("SORTER PROCESSED FJPOOL - (ms) : " + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
@@ -180,11 +175,11 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
         long startMetricFile = System.nanoTime();
 
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
-        final ForkJoinPool histoPool = new ForkJoinPool();
 
         for (final String library : duplicationHistosByLibrary.keySet())
         {
-            histoPool.execute(() ->
+            locker.incrementAndGet();
+            pool.execute(() ->
             {
                 final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
                 final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
@@ -207,17 +202,23 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
                     }
                 }
                 metrics.calculateDerivedFields();
-
                 synchronized (sync) {
                     file.addMetric(metrics);
                     file.addHistogram(duplicationHisto);
                 }
+                locker.decrementAndGet();
             });
         }
 
-        histoPool.shutdown();
+        // Waiting for all threads finish their job and check for missed group stacks
+        while (locker.get() != 0) {
+            if(locker.get() == 0)
+                break;
+        }
+
+        pool.shutdown();
         try {
-            histoPool.awaitTermination( 1, TimeUnit.MICROSECONDS);
+            pool.awaitTermination( 1, TimeUnit.MICROSECONDS);
         } catch (InterruptedException e) {
             e.printStackTrace();
         }

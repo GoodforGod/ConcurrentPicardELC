@@ -43,14 +43,15 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
 
     //  Temporary structure, used in sorting via StreamAPI (doStreamSort)
     protected class PairAndRec {
-        public SAMRecord rec;
-        public PairedReadSequence prs;
-        public PairedReadSequenceWithBarcodes prsWithBarcodes;
+        public final SAMRecord rec;
+        public final PairedReadSequence prs;
+        public final PairedReadSequenceWithBarcodes prsWithBarcodes;
 
-        public PairAndRec(SAMRecord rec, PairedReadSequence prs)
+        public PairAndRec(SAMRecord rec, PairedReadSequence prs, PairedReadSequenceWithBarcodes prsWithBarcodes)
         {
             this.rec = rec;
             this.prs = prs;
+            this.prsWithBarcodes = prsWithBarcodes;
         }
     }
 
@@ -83,12 +84,11 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
     }
 
     // Sorting via StreamAPI
+    // IS NOT WORKING PROPERLY, some bugs in parallel process pairs, when fill bases
     protected ElcSmartSortResponse doStreamSort(final boolean useBarcodes) {
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
-        long startTime = System.nanoTime();
-
-        final Object sync = new Object();
+        final long startTime = System.nanoTime();
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final ConcurrentSortingCollection<PairedReadSequence> sorter;
@@ -102,67 +102,70 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
                 MAX_RECORDS_IN_RAM,
                 TMP_DIR);
 
-        AtomicInteger count = new AtomicInteger(0);
-
+        //Check if the pair os OK to add to sorter
+        Predicate<PairedReadSequence> isPairValid = (pair) -> (pair.read1 != null
+                                                            && pair.read2 != null
+                                                            && pair.qualityOk);
         // Filter is Record valid or not
         Predicate<SAMRecord> isRecValid = (rec) -> (rec.getReadPairedFlag()
                                                 && (rec.getFirstOfPairFlag() || rec.getSecondOfPairFlag())
                                                 && !rec.isSecondaryOrSupplementary());
-
-        Predicate<PairAndRec> isPairAndRecValid = (prsAndRec) -> (prsAndRec.rec != null
-                                                                && prsAndRec.prs != null
-                                                                && prsAndRec.prs.qualityOk
-                                                                && prsAndRec.rec.getReadBases() != null
+        // Check for valid pairs & records
+        Predicate<PairAndRec> isPairAndRecValid = (prsAndRec) -> (prsAndRec.prs != null
+                                                                && (prsAndRec.prs.qualityOk = prsAndRec.prs.qualityOk
                                                                 && passesQualityCheck(prsAndRec.rec.getReadBases(),
                                                                                       prsAndRec.rec.getBaseQualities(),
                                                                                       MIN_IDENTICAL_BASES,
-                                                                                      MIN_MEAN_QUALITY));
+                                                                                      MIN_MEAN_QUALITY)));
         // Loop through the input files and pick out the read sequences etc.
         for (final File f : INPUT) {
             final Map<String, PairedReadSequence> pendingByName = new ConcurrentHashMap<>();
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
             readGroups.addAll(in.getFileHeader().getReadGroups());
 
-            long startRecLoop = System.nanoTime();
+            in.iterator().stream()
+                    .parallel()
+                    .unordered()
+                    .filter(isRecValid)
+                    .map(rec -> {
+                        PairedReadSequence prs = pendingByName.remove(rec.getReadName());
+                        if (prs == null) {
+                            // Make a new paired read object and add RG and physical location information to it
+                            prs = useBarcodes
+                                    ? new PairedReadSequenceWithBarcodes()
+                                    : new PairedReadSequence();
 
-            BlockingQueue<PairedReadSequence> parallelListPRS = new LinkedBlockingQueue<>();
-
-             in.iterator().stream()
-                        .parallel()
-                        .unordered()
-                        .filter(isRecValid)
-                        .map(rec -> new PairAndRec(rec, pendingByName.remove(rec.getReadName())))
-                        .map(prsAndRec -> {
-                            if (prsAndRec.prs == null) {
-                                // Make a new paired read object and add RG and physical location information to it
-                                prsAndRec.prs = useBarcodes
-                                              ? new PairedReadSequenceWithBarcodes()
-                                              : new PairedReadSequence();
-
-                                if (opticalDuplicateFinder.addLocationInformation(prsAndRec.rec.getReadName(), prsAndRec.prs)) {
-                                    final SAMReadGroupRecord rg = prsAndRec.rec.getReadGroup();
-                                    if (rg != null)
-                                        prsAndRec.prs.setReadGroup((short) readGroups.indexOf(rg));
-                                }
-                                prsAndRec.prs = pendingByName.put(prsAndRec.rec.getReadName(), prsAndRec.prs);
+                            if (opticalDuplicateFinder.addLocationInformation(rec.getReadName(), prs)) {
+                                final SAMReadGroupRecord rg = rec.getReadGroup();
+                                if (rg != null)
+                                    prs.setReadGroup((short) readGroups.indexOf(rg));
                             }
-                            prsAndRec.prsWithBarcodes = useBarcodes
-                                                      ? (PairedReadSequenceWithBarcodes) prsAndRec.prs
-                                                      : null;
-                            progress.record(prsAndRec.rec);
-                            return prsAndRec;
-                        })
-                        .filter(isPairAndRecValid)
-                        .map(this::FillPairedSequence)
-                        .forEachOrdered(parallelListPRS::add);
+                            prs = pendingByName.put(rec.getReadName(), prs);
+                        }
+                        PairedReadSequenceWithBarcodes prsWithBarcodes = useBarcodes
+                                ? (PairedReadSequenceWithBarcodes) prs
+                                : null;
+
+                       /* prs.qualityOk = prs.qualityOk && passesQualityCheck(rec.getReadBases(),
+                                rec.getBaseQualities(),
+                                MIN_IDENTICAL_BASES,
+                                MIN_MEAN_QUALITY);*/
+
+                        progress.record(rec);
+                        return new PairAndRec(rec, prs, prsWithBarcodes);
+                    })
+                    .filter(isPairAndRecValid)
+                    .map(this::FillPairedSequence)
+                    .filter(isPairValid)
+                    .forEachOrdered(sorter::add);
 
             CloserUtil.close(in);
         }
 
         log.info("FILL SORTING - STREAM-SORT ELC (ms) : "
                 + (sortTime = (double) ((System.nanoTime() - startTime) / 1000000)));
-
-        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates." ,
+                progress.getCount()));
 
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
@@ -300,12 +303,11 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
                 }
             }
 
-            // Some useless work to wait for locks
-            while (locker.get() != 0){
-                if(locker.get() == 0)
+            // Some useless work to wait for locks & sorter to spill
+            while (locker.get() != 0 || sorter.isSpillToDiskInProgress()){
+                if(locker.get() == 0 && !sorter.isSpillToDiskInProgress())
                     break;
             }
-
             CloserUtil.close(in);
         }
 
@@ -496,10 +498,10 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
-        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());
+        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> opticalHistosByLibrary     = new ConcurrentHashMap<String, Histogram<Integer>>();
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> opticalHistosByLibrary     = new ConcurrentHashMap<>();
+        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<>();
 
         final AtomicInteger groupsProcessed = new AtomicInteger(0);
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
@@ -528,6 +530,9 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         final long startSortIterateTime = System.nanoTime();
 
         // pool manager, receives stack of groups, and make worker to process them
+
+        // Somehow we process less groups then in sequential doWork 241000 vs 715000,
+        // may be concurrentSorter has bugs
         pool.execute(() -> {
             while (!Thread.interrupted()) {
                 try {
@@ -616,7 +621,7 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
             e.printStackTrace();
         }*/
 
-        log.info("SORTER PROCESS - (ms) : " + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+        log.info("SORTER - EXECUTOR (ms) : " + (double)(System.nanoTime() - startSortIterateTime) / 1000000);
 
         iterator.close();
         sorter.cleanup();
@@ -667,8 +672,8 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         }
 
         double elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - THREAD POOL ELC (ms) : " + ((elcTime - (double)startMetricFile / 1000000)));
-        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + (elcTime - (double)startTime / 1000000)));
+        log.info("METRIC - EXECUTOR ELC (ms) : " + ((elcTime - (double)startMetricFile / 1000000)));
+        log.info("TOTAL - EXECUTOR ELC (ms) : " + (sortTime + (elcTime - (double)startTime / 1000000)));
 
         file.write(OUTPUT);
         return 0;
