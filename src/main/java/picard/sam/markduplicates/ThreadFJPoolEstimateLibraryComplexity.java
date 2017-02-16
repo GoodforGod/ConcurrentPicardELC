@@ -9,7 +9,6 @@ package picard.sam.markduplicates;
 import htsjdk.samtools.SAMReadGroupRecord;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
-import org.openjdk.jmh.annotations.Fork;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
@@ -54,10 +53,10 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
-        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<PairedReadSequence>(sorter.iterator());
+        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> opticalHistosByLibrary     = new ConcurrentHashMap<String, Histogram<Integer>>();
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<String, Histogram<Integer>>();
+        final Map<String, Histogram<Integer>> opticalHistosByLibrary     = new ConcurrentHashMap<>();
+        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<>();
 
         final AtomicInteger groupsProcessed = new AtomicInteger(0);
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
@@ -135,7 +134,7 @@ public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimat
             try {
                 groupStack.add(getNextGroup(iterator));
 
-                if(groupStack.size() >= 50000)
+                if(groupStack.size() >= GROUP_PROCESS_STACK_SIZE)
                 {
                     try {
                         groupQueue.put(groupStack);

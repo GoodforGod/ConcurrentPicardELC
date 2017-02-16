@@ -90,17 +90,16 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
 
         final long startTime = System.nanoTime();
 
-        final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
-        final ConcurrentSortingCollection<PairedReadSequence> sorter;
+        final List<SAMReadGroupRecord> readGroups = new ArrayList<>();
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
-
-        sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
-                !useBarcodes
-                        ? new PairedReadCodec()
-                        : new PairedReadWithBarcodesCodec(),
-                new PairedReadComparator(),
-                MAX_RECORDS_IN_RAM,
-                TMP_DIR);
+        final ConcurrentSortingCollection<PairedReadSequence>
+                sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
+                    !useBarcodes
+                            ? new PairedReadCodec()
+                            : new PairedReadWithBarcodesCodec(),
+                    new PairedReadComparator(),
+                    MAX_RECORDS_IN_RAM,
+                    TMP_DIR);
 
         //Check if the pair os OK to add to sorter
         Predicate<PairedReadSequence> isPairValid = (pair) -> (pair.read1 != null
@@ -176,22 +175,21 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
 
         long startTime = System.nanoTime();
 
-        final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
-        final ConcurrentSortingCollection<PairedReadSequence> sorter;
+        final List<SAMReadGroupRecord> readGroups = new ArrayList<>();
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
-
-        sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
-                !useBarcodes
-                        ? new PairedReadCodec()
-                        : new PairedReadWithBarcodesCodec(),
-                new PairedReadComparator(),
-                MAX_RECORDS_IN_RAM,
-                TMP_DIR);
+        final ConcurrentSortingCollection<PairedReadSequence>
+                sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
+                    !useBarcodes
+                            ? new PairedReadCodec()
+                            : new PairedReadWithBarcodesCodec(),
+                    new PairedReadComparator(),
+                    MAX_RECORDS_IN_RAM,
+                    TMP_DIR);
 
 
         // Loop through the input files and pick out the read sequences etc.
 
-        final int recordListSize = MAX_RECORDS_IN_RAM / 1000;
+        final int recordListSize = RECORD_PROCESS_STACK_SIZE;
         final ExecutorService pool = Executors.newCachedThreadPool();
         final BlockingQueue<List<SAMRecord>> queueRecords = new ArrayBlockingQueue<>(10);
         List<SAMRecord> records = new ArrayList<>(recordListSize);
@@ -199,7 +197,7 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
         final AtomicInteger locker = new AtomicInteger(0);
 
-        final Object sync = new Object();
+        //final Object sync = new Object();
 
         for (final File f : INPUT) {
             final Map<String, PairedReadSequence> pendingByName = new ConcurrentHashMap<>();
@@ -332,21 +330,17 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         long startTime = System.nanoTime();
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
-        final ConcurrentSortingCollection<PairedReadSequence> sorter;
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
+        final ConcurrentSortingCollection<PairedReadSequence>
+                sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
+                    !useBarcodes
+                            ? new PairedReadCodec()
+                            : new PairedReadWithBarcodesCodec(),
+                    new PairedReadComparator(),
+                    MAX_RECORDS_IN_RAM,
+                    TMP_DIR);
 
-        sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
-                !useBarcodes
-                        ? new PairedReadCodec()
-                        : new PairedReadWithBarcodesCodec(),
-                new PairedReadComparator(),
-                MAX_RECORDS_IN_RAM,
-                TMP_DIR);
-
-
-        // Loop through the input files and pick out the read sequences etc.
-
-        final int recordListSize = MAX_RECORDS_IN_RAM / 1000;
+        final int recordListSize = RECORD_PROCESS_STACK_SIZE;
         final ForkJoinPool pool = new ForkJoinPool();
         final BlockingQueue<List<SAMRecord>> queueRecords = new ArrayBlockingQueue<>(10);
         List<SAMRecord> records = new ArrayList<>(recordListSize);
@@ -354,8 +348,9 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
         final AtomicInteger locker = new AtomicInteger(0);
 
-        final Object sync = new Object();
+        //final Object sync = new Object();
 
+        // Loop through the input files and pick out the read sequences etc.
         for (final File f : INPUT) {
             final Map<String, PairedReadSequence> pendingByName = new ConcurrentHashMap<>();
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
@@ -481,6 +476,10 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
 
+    protected final int GROUP_PROCESS_STACK_SIZE = 50000;
+
+    protected final int RECORD_PROCESS_STACK_SIZE = MAX_RECORDS_IN_RAM / 1000;
+
     protected int doWork() {
         IOUtil.assertFilesAreReadable(INPUT);
 
@@ -584,7 +583,7 @@ public class ThreadExecutorEstimateLibraryComplexity extends EstimateLibraryComp
             try {
                 groupStack.add(getNextGroup(iterator));
 
-                if(groupStack.size() >= 50000)
+                if(groupStack.size() >= GROUP_PROCESS_STACK_SIZE)
                 {
                     try {
                         groupQueue.put(groupStack);

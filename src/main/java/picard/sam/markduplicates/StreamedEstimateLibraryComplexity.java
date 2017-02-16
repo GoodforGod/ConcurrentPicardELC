@@ -15,12 +15,10 @@ import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Predicate;
 
 import static java.lang.Math.decrementExact;
 import static java.lang.Math.pow;
@@ -142,7 +140,7 @@ public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLib
             {
                 ++groupsProcessed;
                 temporaryGroups.add(group);
-                if(temporaryGroups.size() >= streamable)
+                if(temporaryGroups.size() >= GROUP_PROCESS_STACK_SIZE)
                 {
                     try {
                         groupQueue.put(temporaryGroups);
