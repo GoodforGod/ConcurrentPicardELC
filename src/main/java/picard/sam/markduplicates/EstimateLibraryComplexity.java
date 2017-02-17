@@ -45,6 +45,7 @@ import picard.cmdline.StandardOptionDefinitions;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.AbstractOpticalDuplicateFinderCommandLineProgram;
+import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 import picard.sam.util.PhysicalLocationShort;
 
 import java.io.DataInputStream;
@@ -126,7 +127,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
             "be grouped together for duplicate detection.  In effect total_reads / 4^max_id_bases reads will " +
             "be compared at a time, so lower numbers will produce more accurate results but consume " +
             "exponentially more memory and CPU.")
-    public int MIN_IDENTICAL_BASES = 5;
+    public volatile int MIN_IDENTICAL_BASES = 5;
 
     @Option(doc = "The maximum rate of differences between two reads to call them identical.")
     public double MAX_DIFF_RATE = 0.03;
@@ -381,10 +382,10 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
         public int compare(final PairedReadSequence lhs, final PairedReadSequence rhs) {
             // First compare the first N bases of the first read
             for (int i = 0; i < BASES; ++i) {
-              /*  if(lhs.read1 == null || rhs.read1 == null) {
+                if(lhs.read1 == null || rhs.read1 == null) {
                     System.out.println("READ NULL");
                     return 1;
-                }*/
+                }
                 final int retval = lhs.read1[i] - rhs.read1[i];
                 if (retval != 0)
                     return retval;
@@ -392,10 +393,10 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
 
             // Then compare the first N bases of the second read
             for (int i = 0; i < BASES; ++i) {
-             /*   if(lhs.read2 == null || rhs.read2 == null) {
+                if(lhs.read2 == null || rhs.read2 == null) {
                     System.out.println("READ NULL");
                     return 1;
-                }*/
+                }
                 final int retval = lhs.read2[i] - rhs.read2[i];
                 if (retval != 0)
                     return retval;
@@ -442,9 +443,99 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
     // Remember sorting time
     protected double sortTime;
 
+    protected ElcSmartSortResponse doSortWithConcurrentSortingCollection(boolean useBarcodes) {
+        log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
+
+        long startTime = System.nanoTime();
+
+        final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
+        final ConcurrentSortingCollection<PairedReadSequence> sorter;
+
+        if (!useBarcodes) {
+            sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
+                    new PairedReadCodec(),
+                    new PairedReadComparator(),
+                    MAX_RECORDS_IN_RAM,
+                    TMP_DIR);
+        } else {
+            sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
+                    new PairedReadWithBarcodesCodec(),
+                    new PairedReadComparator(),
+                    MAX_RECORDS_IN_RAM,
+                    TMP_DIR);
+        }
+
+        // Loop through the input files and pick out the read sequences etc.
+        final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
+
+        for (final File f : INPUT) {
+            final Map<String, PairedReadSequence> pendingByName = new HashMap<String, PairedReadSequence>();
+            final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
+            readGroups.addAll(in.getFileHeader().getReadGroups());
+
+            for (final SAMRecord rec : in) {
+                if (!rec.getReadPairedFlag()) continue;
+                if (!rec.getFirstOfPairFlag() && !rec.getSecondOfPairFlag()) {
+                    continue;
+                }
+                if (rec.isSecondaryOrSupplementary()) continue;
+
+                PairedReadSequence prs = pendingByName.remove(rec.getReadName());
+                if (prs == null) {
+                    // Make a new paired read object and add RG and physical location information to it
+                    prs = useBarcodes ? new PairedReadSequenceWithBarcodes() : new PairedReadSequence();
+                    if (opticalDuplicateFinder.addLocationInformation(rec.getReadName(), prs)) {
+                        final SAMReadGroupRecord rg = rec.getReadGroup();
+                        if (rg != null) prs.setReadGroup((short) readGroups.indexOf(rg));
+                    }
+
+                    pendingByName.put(rec.getReadName(), prs);
+                }
+
+                // Read passes quality check if both ends meet the mean quality criteria
+                final boolean passesQualityCheck = passesQualityCheck(rec.getReadBases(),
+                        rec.getBaseQualities(),
+                        MIN_IDENTICAL_BASES,
+                        MIN_MEAN_QUALITY);
+                prs.qualityOk = prs.qualityOk && passesQualityCheck;
+
+                // Get the bases and restore them to their original orientation if necessary
+                final byte[] bases = rec.getReadBases();
+                if (rec.getReadNegativeStrandFlag()) SequenceUtil.reverseComplement(bases);
+
+                final PairedReadSequenceWithBarcodes prsWithBarcodes = (useBarcodes) ? (PairedReadSequenceWithBarcodes) prs : null;
+
+                if (rec.getFirstOfPairFlag()) {
+                    prs.read1 = bases;
+                    if (useBarcodes) {
+                        prsWithBarcodes.barcode = getBarcodeValue(rec);
+                        prsWithBarcodes.readOneBarcode = getReadOneBarcodeValue(rec);
+                    }
+                } else {
+                    prs.read2 = bases;
+                    if (useBarcodes) {
+                        prsWithBarcodes.readTwoBarcode = getReadTwoBarcodeValue(rec);
+                    }
+                }
+
+                if (prs.read1 != null && prs.read2 != null && prs.qualityOk) {
+                    sorter.add(prs);
+                }
+
+                progress.record(rec);
+            }
+            CloserUtil.close(in);
+        }
+
+        log.info("SORTING - DEFAULT ELC (ms) : "
+                + (sortTime = (double)((System.nanoTime() - startTime) / 1000000)));
+
+        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+        return new ElcSmartSortResponse(sorter, readGroups, progress);
+    }
+
     // To benchmark perfomance while sort part is active
-    protected ElcSortResponse doSort(boolean useBarcodes)
-    {
+    protected ElcSortResponse doSort(boolean useBarcodes) {
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
         long startTime = System.nanoTime();

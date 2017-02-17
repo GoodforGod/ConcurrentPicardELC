@@ -7,6 +7,9 @@ package benchmark;
  */
 
 import picard.sam.markduplicates.ConcurrentExecutorEstimateLibraryComplexity;
+import picard.sam.markduplicates.ConcurrentStreamedEstimateLibraryComplexity;
+import picard.sam.markduplicates.ConcurrentForkJoinPoolEstimateLibraryComplexity;
+import picard.sam.markduplicates.EstimateLibraryComplexity;
 
 /*
  * Entrance point for ELC benchmarks & tests
@@ -20,7 +23,7 @@ public class BenchmarkELC
     public static void main(String[] args)
     {
         //new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
-        new ConcurrentExecutorEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
+        new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 
     private static void Filalize() {

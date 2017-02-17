@@ -44,14 +44,13 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
     }
 
     protected int doWork() {
-
         IOUtil.assertFilesAreReadable(INPUT);
 
         final boolean useBarcodes   = (null != BARCODE_TAG
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
+        final ElcSmartSortResponse response = doStreamSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
