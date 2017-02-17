@@ -31,11 +31,11 @@ import static java.lang.Math.pow;
         usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
         programGroup = Metrics.class
 )
-public class StreamedEstimateLibraryComplexity extends ThreadExecutorEstimateLibraryComplexity
+public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecutorEstimateLibraryComplexity
 {
-    protected final Log log = Log.getInstance(StreamedEstimateLibraryComplexity.class);
+    protected final Log log = Log.getInstance(ConcurrentStreamedEstimateLibraryComplexity.class);
 
-    public StreamedEstimateLibraryComplexity() {
+    public ConcurrentStreamedEstimateLibraryComplexity() {
         super();
     }
 

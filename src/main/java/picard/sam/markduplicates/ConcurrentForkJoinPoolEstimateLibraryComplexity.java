@@ -28,11 +28,11 @@ import static java.lang.Math.pow;
         usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
         programGroup = Metrics.class
 )
-public class ThreadFJPoolEstimateLibraryComplexity extends ThreadExecutorEstimateLibraryComplexity
+public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentExecutorEstimateLibraryComplexity
 {
-    protected final Log log = Log.getInstance(ThreadFJPoolEstimateLibraryComplexity.class);
+    protected final Log log = Log.getInstance(ConcurrentForkJoinPoolEstimateLibraryComplexity.class);
 
-    public ThreadFJPoolEstimateLibraryComplexity(){
+    public ConcurrentForkJoinPoolEstimateLibraryComplexity(){
         super();
     }
 

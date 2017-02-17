@@ -8,7 +8,6 @@ package picard.sam.markduplicates.util;
 
 import htsjdk.samtools.Defaults;
 import htsjdk.samtools.util.*;
-import picard.sam.markduplicates.EstimateLibraryComplexity;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -21,7 +20,6 @@ import java.io.Serializable;
 import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Predicate;
 
 /**
  * Collection to which many records can be added.  After all records are added, the collection can be
@@ -151,7 +149,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             if (numRecordsInRam == maxRecordsInRam) {
                 final T[] buffer = ramRecords;
                 ramRecords = (T[]) Array.newInstance(componentType, maxRecordsInRam);
-                spillInProgress.incrementAndGet();
+                spillsInProgressCounter.incrementAndGet();
                 new Thread(() -> spillToDisk(buffer, numRecordsInRam)).start();
                 numRecordsInRam = 0;
             }
@@ -202,10 +200,11 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         this.destructiveIteration = destructiveIteration;
     }
 
-    private final AtomicInteger spillInProgress = new AtomicInteger(0);
+    // Is incremented when spilling to disk and dec when operation is done
+    private final AtomicInteger spillsInProgressCounter = new AtomicInteger(0);
 
-    public boolean isSpillToDiskInProgress() {
-        return spillInProgress.get() != 0;
+    public boolean isSpillingToDisk() {
+        return spillsInProgressCounter.get() != 0;
     }
 
     /**
@@ -214,14 +213,16 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
     private void spillToDisk(final T[] buffer, int numRecordsInRam) {
 
         try {
+            Arrays.sort(buffer, 0, numRecordsInRam, this.comparator);
+            //Somehow this stream stucks on the doneAdding and only after that method, wtf
+            //Arrays.stream(buffer).parallel().sorted(this.comparator).forEachOrdered(this.codec::encode);
+
             final File f = newTempFile();
             OutputStream os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
 
             try {
                 this.codec.setOutputStream(os);
-                // Somehow this stream stucks on the doneAdding and only after that method, wtf
-                // d, wtf
-                // Arrays.stream(buffer).parallel().sorted(this.comparator).forEachOrdered(this.codec::encode);
+
                 for (int i = 0; i < numRecordsInRam; ++i) {
                     this.codec.encode(buffer[i]);
                     buffer[i] = null;
@@ -235,13 +236,13 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             finally {
                 if (os != null)
                     os.close();
-                if(spillInProgress.get() > 0)
-                    spillInProgress.decrementAndGet();
+                if(spillsInProgressCounter.get() > 0)
+                    spillsInProgressCounter.decrementAndGet();
             }
             this.files.add(f);
         }
         catch (IOException e){
-            spillInProgress.decrementAndGet();
+            spillsInProgressCounter.decrementAndGet();
             throw new RuntimeIOException(e);
         }
 
