@@ -139,24 +139,31 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
     private final Object sync = new Object();
 
     public void add(final T rec) {
-        if (doneAdding) {
+        if (doneAdding)
             throw new IllegalStateException("Cannot add after calling doneAdding()");
-        }
-        if (iterationStarted) {
+
+        if (iterationStarted)
             throw new IllegalStateException("Cannot add after calling iterator()");
-        }
+
         synchronized (sync) {
-            if (numRecordsInRam == maxRecordsInRam) {
-                final T[] buffer = ramRecords;
-                ramRecords = (T[]) Array.newInstance(componentType, maxRecordsInRam);
-                spillsInProgressCounter.incrementAndGet();
-                new Thread(() -> spillToDisk(buffer, numRecordsInRam)).start();
-                numRecordsInRam = 0;
-            }
+            if (numRecordsInRam == maxRecordsInRam)
+                initiateSpillToDisk();
             ramRecords[numRecordsInRam++] = rec;
         }
     }
 
+    /**
+     * Initalizes spill to disk thread and reset buffer
+     */
+    private void initiateSpillToDisk()
+    {
+        final T[] buffer = ramRecords;
+        final int currentNumRecordsInRam = numRecordsInRam;
+        ramRecords = (T[]) Array.newInstance(componentType, maxRecordsInRam);
+        spillsInProgressCounter.incrementAndGet();
+        new Thread(() -> spillToDisk(buffer, currentNumRecordsInRam)).start();
+        numRecordsInRam = 0;
+    }
 
     /**
      * This method can be called after caller is done adding to collection, in order to possibly free
@@ -210,7 +217,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
     /**
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
-    private void spillToDisk(final T[] buffer, int numRecordsInRam) {
+    private void spillToDisk(final T[] buffer, final int numRecordsInRam) {
 
         try {
             Arrays.sort(buffer, 0, numRecordsInRam, this.comparator);
@@ -222,7 +229,6 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
 
             try {
                 this.codec.setOutputStream(os);
-
                 for (int i = 0; i < numRecordsInRam; ++i) {
                     this.codec.encode(buffer[i]);
                     buffer[i] = null;
@@ -232,12 +238,9 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             catch (RuntimeIOException e) {
                 throw new RuntimeIOException("Problem writing temporary file " + f.getAbsolutePath() +
                         ".  Try setting TMP_DIR to a file system with lots of space.", e);
-            }
-            finally {
+            } finally {
                 if (os != null)
                     os.close();
-                if(spillsInProgressCounter.get() > 0)
-                    spillsInProgressCounter.decrementAndGet();
             }
             this.files.add(f);
         }
@@ -245,36 +248,9 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             spillsInProgressCounter.decrementAndGet();
             throw new RuntimeIOException(e);
         }
-
-/*        try {
-            Arrays.sort(buffer, 0, numRecordsInRam, this.comparator);
-
-            final File f = newTempFile();
-            OutputStream os = null;
-            try {
-                os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
-                this.codec.setOutputStream(os);
-                for (int i = 0; i < numRecordsInRam; ++i) {
-                    this.codec.encode(buffer[i]);
-                    // Facilitate GC
-                    buffer[i] = null;
-                }
-
-                os.flush();
-            } catch (RuntimeIOException ex) {
-                throw new RuntimeIOException("Problem writing temporary file " + f.getAbsolutePath() +
-                        ".  Try setting TMP_DIR to a file system with lots of space.", ex);
-            } finally {
-                if (os != null) {
-                    os.close();
-                }
-            }
-
-            this.files.add(f);
+        finally {
+            spillsInProgressCounter.decrementAndGet();
         }
-        catch (IOException e) {
-            throw new RuntimeIOException(e);
-        }*/
     }
 
     /**
@@ -290,17 +266,16 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
      * but add() may not be called after this method has been called.
      */
     public CloseableIterator<T> iterator() {
-        if (this.cleanedUp) {
+        if (this.cleanedUp)
             throw new IllegalStateException("Cannot call iterator() after cleanup() was called.");
-        }
-        doneAdding();
 
+        doneAdding();
         this.iterationStarted = true;
-        if (this.files.isEmpty()) {
+
+        if (this.files.isEmpty())
             return new InMemoryIterator();
-        } else {
+        else
             return new MergingIterator();
-        }
     }
 
     /**

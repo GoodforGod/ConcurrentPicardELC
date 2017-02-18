@@ -50,7 +50,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ElcSmartSortResponse response = doStreamSort(useBarcodes);
+        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
 
         long startTime = System.nanoTime();
 
