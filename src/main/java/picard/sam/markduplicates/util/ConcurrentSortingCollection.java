@@ -185,6 +185,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             return;
 
         if (this.numRecordsInRam > 0) {
+            spillsInProgressCounter.incrementAndGet();
             spillToDisk(ramRecords, numRecordsInRam);
             numRecordsInRam = 0;
         }
@@ -232,6 +233,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
                 //Somehow this stream stucks on the doneAdding and only after that method, wtf
                 // Use filter for nonNull while array is always allocated in fix maxInRamRecord size, to skip nullables
                 //Arrays.stream(buffer).parallel().filter(Objects::nonNull).sorted(this.comparator).forEachOrdered(this.codec::encode);
+
                 for (int i = 0; i < numRecordsInRam; ++i) {
                     this.codec.encode(buffer[i]);
                     buffer[i] = null;
@@ -248,7 +250,6 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
             this.files.add(f);
         }
         catch (IOException e){
-            spillsInProgressCounter.decrementAndGet();
             throw new RuntimeIOException(e);
         }
         finally {

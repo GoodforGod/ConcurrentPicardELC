@@ -72,6 +72,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         final int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
         final int streamable = streamReady / 10000;
 
+        final List<List<PairedReadSequence>> groupPoisonPill = Collections.emptyList();
         final ForkJoinPool pool = new ForkJoinPool();
 
         // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
@@ -207,6 +208,12 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
                 }
                 locker.decrementAndGet();
             });
+        }
+
+        try {
+            groupQueue.put(groupPoisonPill);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
 
         // Waiting for all threads finish their job and check for missed group stacks

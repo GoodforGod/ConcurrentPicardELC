@@ -15,10 +15,12 @@ import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 import static java.lang.Math.decrementExact;
 import static java.lang.Math.pow;
@@ -77,12 +79,14 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                 opticalDuplicateFinder
         );
 
-        //Predicate<List<PairedReadSequence>> pairFilter = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
+        Predicate<List<PairedReadSequence>> isGroupValid = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
 
         int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
         int streamable = streamReady / 1000;
 
+        final List<List<PairedReadSequence>> groupPoisonPill = Collections.emptyList();
         final ForkJoinPool pool = new ForkJoinPool();
+
         final BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
         final AtomicInteger locker = new AtomicInteger(0);
 
@@ -126,15 +130,8 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         while (iterator.hasNext()) {
             final List<PairedReadSequence> group = getNextGroup(iterator);
 
-            if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
-            {
-                final PairedReadSequence prs = group.get(0);
-                log.warn("Omitting group with over " + MAX_GROUP_RATIO
-                        + " times the expected mean number of read pairs. Mean=" + meanGroupSize
-                        + ", Actual="    + group.size()
-                        + ". Prefixes: " + StringUtil.bytesToString(prs.read1, 0, MIN_IDENTICAL_BASES)
-                        + " / "          + StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
-            }
+            if (isGroupValid.test(group))
+                logInvalidGroup(group, meanGroupSize);
             else
             {
                 ++groupsProcessed;
@@ -208,6 +205,12 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                 }
                 locker.decrementAndGet();
             });
+        }
+
+        try {
+            groupQueue.put(groupPoisonPill);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
         }
 
         while (locker.get() != 0) {
