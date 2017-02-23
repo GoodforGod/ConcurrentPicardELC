@@ -156,7 +156,7 @@ public class EstimateLibraryComplexity extends AbstractOpticalDuplicateFinderCom
     @Option(doc = "Minimum number group count.  On a per-library basis, we count the number of groups of duplicates " +
             "that have a particular size.  Omit from consideration any count that is less than this value.  For " +
             "example, if we see only one group of duplicates with size 500, we omit it from the metric calculations if " +
-            "MIN_GROUP_COUNT is set to two.  Setting this to two may help remove technical artifacts from the library " +
+            "MIN_GROUP_COUNT is set to two.  Setting this to two may help get technical artifacts from the library " +
             "size calculation, for example, adapter dimers.", optional = true)
     public int MIN_GROUP_COUNT = 2;
 

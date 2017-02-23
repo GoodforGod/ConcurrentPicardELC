@@ -230,7 +230,7 @@ public class IlluminaFileUtilTest {
                 throw new RuntimeException("Trying to empty a directory(" + actualFile.getAbsolutePath() + ")");
             } else {
                 if (!actualFile.delete()) {
-                    throw new RuntimeException("Couldn't remove previous file when emptying(" + actualFile.getAbsolutePath() + ")");
+                    throw new RuntimeException("Couldn't get previous file when emptying(" + actualFile.getAbsolutePath() + ")");
                 } else {
                     try {
                         if (!actualFile.createNewFile()) {

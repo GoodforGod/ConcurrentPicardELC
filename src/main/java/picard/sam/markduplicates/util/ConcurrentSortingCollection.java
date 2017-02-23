@@ -20,6 +20,7 @@ import java.io.Serializable;
 import java.lang.reflect.Array;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Predicate;
 
 /**
  * Collection to which many records can be added.  After all records are added, the collection can be
@@ -159,7 +160,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
     {
         // Need to try subArray to use streams and other features
         //final T[] buffer = Arrays.copyOfRange(ramRecords, 0, numRecordsInRam);
-        final T[] buffer = ramRecords;
+        final T[] buffer = Arrays.copyOf(ramRecords, numRecordsInRam);
         final int currentNumRecordsInRam = numRecordsInRam;
         ramRecords = (T[]) Array.newInstance(componentType, maxRecordsInRam);
         spillsInProgressCounter.incrementAndGet();
@@ -186,7 +187,7 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
 
         if (this.numRecordsInRam > 0) {
             spillsInProgressCounter.incrementAndGet();
-            spillToDisk(ramRecords, numRecordsInRam);
+            spillToDisk(Arrays.copyOf(ramRecords, numRecordsInRam), numRecordsInRam);
             numRecordsInRam = 0;
         }
 
@@ -223,21 +224,25 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
     private void spillToDisk(final T[] buffer, final int numRecordsInRam) {
 
         try {
-            Arrays.sort(buffer, 0, numRecordsInRam, this.comparator);
-
+            //long start = System.nanoTime();
+            //Arrays.parallelSort(buffer, 0, numRecordsInRam, this.comparator);
             final File f = newTempFile();
             OutputStream os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
 
             try {
                 this.codec.setOutputStream(os);
-                //Somehow this stream stucks on the doneAdding and only after that method, wtf
-                // Use filter for nonNull while array is always allocated in fix maxInRamRecord size, to skip nullables
-                //Arrays.stream(buffer).parallel().filter(Objects::nonNull).sorted(this.comparator).forEachOrdered(this.codec::encode);
+                // Use array's copy, to make stream with out nonNull filter
+                Arrays.stream(buffer).parallel()
+                        .unordered()
+                        .sorted(this.comparator)
+                        .forEachOrdered(this.codec::encode);
 
-                for (int i = 0; i < numRecordsInRam; ++i) {
+/*                for (int i = 0; i < numRecordsInRam; ++i) {
                     this.codec.encode(buffer[i]);
                     buffer[i] = null;
-                }
+                }*/
+                //System.out.println("TOOK (ms): " + (System.nanoTime() - start) / 1000000);
+
                 os.flush();
             }
             catch (RuntimeIOException e) {
