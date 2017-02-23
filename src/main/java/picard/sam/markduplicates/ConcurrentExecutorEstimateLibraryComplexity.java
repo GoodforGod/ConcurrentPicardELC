@@ -252,16 +252,23 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         //
         public void tryAddRest() {
-            if(!stack.isEmpty())
+            if(!stack.isEmpty()) {
                 putToQueue();
+                stack = new ArrayList<T>();
+            }
         }
 
         //
         public List<T> process() {
-            locker.incrementAndGet();
-            try                             { return queue.take(); }
-            catch (InterruptedException e)  { e.printStackTrace(); }
-            return Collections.emptyList();
+            try                             {
+                List<T> toProcess = queue.take();
+                locker.incrementAndGet();
+                return toProcess;
+            }
+            catch (InterruptedException e)  {
+                e.printStackTrace();
+            }
+            return poisonPill;
         }
 
         //
@@ -768,8 +775,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         // Results from the doSort
         final ElcSmartSortResponse response = doSmartSort(useBarcodes);
-
-        long startTime = System.nanoTime();
+        final long startTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
         final ProgressLogger                                  progress   = response.getProgress();
@@ -778,20 +784,16 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
+        final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
-
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, 4);
-
-        final AtomicInteger groupsProcessed = new AtomicInteger(0);
-        final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
         final ExecutorService pool = Executors.newCachedThreadPool();
         final Object sync = new Object();
 
-        final long startSortIterateTime = System.nanoTime();
-
         // pool manager, receives stack of groups, and make worker to process them
+        final long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
                 final List<List<PairedReadSequence>> groupList = groupSupplier.process();
@@ -802,17 +804,12 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
                 pool.submit(() ->
                 {
+                    // Get the next group and split it apart by library
                     for (List<PairedReadSequence> group : groupList) {
-                        // Get the next group and split it apart by library
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
                             logInvalidGroup(group, meanGroupSize);
-                        else {
-                            // Now process the reads by library
-                            splitByLibrary(group, readGroups).entrySet().stream()
-                                    //.parallel()
-                                    .unordered()
-                                    .forEach(histoCollection::processGroup);
-                        }
+                        else
+                            splitByLibrary(group, readGroups).forEach(histoCollection::processGroup);
                     }
                     groupSupplier.confirm();
                 });
