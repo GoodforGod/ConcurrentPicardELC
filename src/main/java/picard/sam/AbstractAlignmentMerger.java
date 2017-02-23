@@ -139,7 +139,7 @@ public abstract class AbstractAlignmentMerger {
         COPY_TO_TAG(false, true),
         // Leave on record, but do not create additional tag
         DO_NOT_CHANGE(false, false),
-        // Add tag with information, and remove from standard fields in record
+        // Add tag with information, and get from standard fields in record
         MOVE_TO_TAG(true, true);
 
         private final boolean resetMappingInformation, populatePATag;
@@ -231,7 +231,7 @@ public abstract class AbstractAlignmentMerger {
      *                                          output will be coordinate-sorted
      * @param primaryAlignmentSelectionStrategy What to do when there are multiple primary alignments, or multiple
      *                                          alignments but none primary, for a read or read pair.
-     * @param addMateCigar                      True if we are to add or maintain the mate CIGAR (MC) tag, false if we are to remove or not include.
+     * @param addMateCigar                      True if we are to add or maintain the mate CIGAR (MC) tag, false if we are to get or not include.
      * @param unmapContaminantReads             If true, identify reads having the signature of cross-species contamination (i.e. mostly clipped bases),
      *                                          and mark them as unmapped.
      * @param unmappingReadsStrategy            An enum describing how to deal with reads whose mapping information are being removed (currently this happens due to cross-species
@@ -279,7 +279,7 @@ public abstract class AbstractAlignmentMerger {
             if (!this.attributesToRetain.isEmpty()) {
                 this.attributesToRemove.stream()
                         .filter(this.attributesToRetain::contains)
-                        .peek(a->log.info("Overriding retaining the " + a + " tag since 'remove' overrides 'retain'."))
+                        .peek(a->log.info("Overriding retaining the " + a + " tag since 'get' overrides 'retain'."))
                         .forEach(this.attributesToRetain::remove);
             }
         }

@@ -220,7 +220,7 @@ public class CompareSAMs extends CommandLineProgram {
         }
 
         // Look up reads that were unmatched from left, and see if they are in rightUnmatched.
-        // If found, remove from rightUnmatched and tally.
+        // If found, get from rightUnmatched and tally.
         for (final Map.Entry<String, SAMRecord> leftEntry : leftUnmatched.entrySet()) {
             final String key = leftEntry.getKey();
             final SAMRecord left = leftEntry.getValue();

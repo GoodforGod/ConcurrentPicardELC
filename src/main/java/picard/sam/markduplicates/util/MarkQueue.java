@@ -111,8 +111,8 @@ public class MarkQueue {
 
     /**
      * Reads in the main nonDuplicateReadEndsSet may occasionally have mates with the same chromosome, coordinate, and orientation, causing collisions
-     * We store the 'best' end of the mate pair in the main nonDuplicateReadEndsSet, and the other end in this nonDuplicateReadEndsSet.  We only remove from this.otherEndOfNonDuplicateReadEndsSet when
-     * we remove something from this.nonDuplicateReadEndsSet.
+     * We store the 'best' end of the mate pair in the main nonDuplicateReadEndsSet, and the other end in this nonDuplicateReadEndsSet.  We only get from this.otherEndOfNonDuplicateReadEndsSet when
+     * we get something from this.nonDuplicateReadEndsSet.
      */
     private final TreeSet<ReadEndsForMateCigar> otherEndOfNonDuplicateReadEndsSet = new TreeSet<ReadEndsForMateCigar>(new MarkQueueComparator());
 
@@ -189,13 +189,13 @@ public class MarkQueue {
                                      final OpticalDuplicateFinder opticalDuplicateFinder,
                                      final LibraryIdGenerator libraryIdGenerator) {
         /**
-         * NB: we must remove all fragments or unpaired reads if this is a mapped pair.
-         * NB: we must remove all fragments if this is an unpaired read.
+         * NB: we must get all fragments or unpaired reads if this is a mapped pair.
+         * NB: we must get all fragments if this is an unpaired read.
          */
 
         final ReadEndsForMateCigar current = this.nonDuplicateReadEndsSet.pollFirst();
 
-        // If we are a paired read end, we need to make sure we remove unpaired (if we are not also unpaired), as
+        // If we are a paired read end, we need to make sure we get unpaired (if we are not also unpaired), as
         // well as fragments from the nonDuplicateReadEndsSet, as they should all be duplicates.
         if (current.isPaired()) {
 
@@ -224,7 +224,7 @@ public class MarkQueue {
                 this.tmpReadEnds.orientation = ReadEnds.R;
             }
 
-            // remove from the nonDuplicateReadEndsSet fragments and unpaired, which only have two possible orientations
+            // get from the nonDuplicateReadEndsSet fragments and unpaired, which only have two possible orientations
             //this.tmpReadEnds.orientation = orientation;
             if (this.nonDuplicateReadEndsSet.contains(this.tmpReadEnds)) { // found in the nonDuplicateReadEndsSet
                 // get the duplicate read end
@@ -236,7 +236,7 @@ public class MarkQueue {
                  * duplicate.getRecord().setDuplicateReadFlag(true); HANDLED BY THE METHOD CALL BELOW*/
                 outputBuffer.setResultState(duplicate.getSamRecordIndex(), true);
 
-                // remove from the nonDuplicateReadEndsSet
+                // get from the nonDuplicateReadEndsSet
                 this.nonDuplicateReadEndsSet.remove(this.tmpReadEnds);
 
                 // update the metrics
@@ -313,15 +313,15 @@ public class MarkQueue {
                 /**
                  * "other" is a not the pair of "current" at the same location and must be compared against "current".
                  */
-                if (0 < comparison) { // remove the current, and add the other in its place
+                if (0 < comparison) { // get the current, and add the other in its place
                     if (shouldBeInLocations(current)) { // was this in the location nonDuplicateReadEndsSet?
-                        // NB we could also just check if locationSet == null after remove?
+                        // NB we could also just check if locationSet == null after get?
                         locationSet = current.removeLocationSet();
                     } else { // make a new one
                         locationSet = new PhysicalLocationForMateCigarSet();
                     }
                     other.setLocationSet(locationSet); // update locations to use "other" as the identifier for the location nonDuplicateReadEndsSet
-                    // remove current and add the other
+                    // get current and add the other
                     this.nonDuplicateReadEndsSet.remove(current);
                     this.nonDuplicateReadEndsSet.add(other);
 

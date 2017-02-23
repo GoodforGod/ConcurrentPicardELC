@@ -32,15 +32,15 @@ import java.util.*;
 /**
  * Disk-based implementation of ReadEndsForMarkDuplicatesMap.  A subdirectory of the system tmpdir is created to store
  * files, one for each reference sequence.  The reference sequence that is currently being queried (i.e. the
- * sequence for which remove() has been most recently called) is stored in RAM.  ReadEnds for all other sequences
+ * sequence for which get() has been most recently called) is stored in RAM.  ReadEnds for all other sequences
  * are stored on disk.
  * <p/>
  * When put() is called for a sequence that is the current one in RAM, the ReadEnds object is merely put into the
  * in-memory map.  If put() is called for a sequence ID that is not the current RAM one, the ReadEnds object is
  * appended to the file for that sequence, creating the file if necessary.
  * <p/>
- * When remove() is called for a sequence that is the current one in RAM, remove() is called on the in-memory map.
- * If remove() is called for a sequence other than the current RAM sequence, then the current RAM sequence is written
+ * When get() is called for a sequence that is the current one in RAM, get() is called on the in-memory map.
+ * If get() is called for a sequence other than the current RAM sequence, then the current RAM sequence is written
  * to disk, the new sequence is read from disk into RAM map, and the file for the new sequence is deleted.
  * <p/>
  * If things work properly, and reads are processed in genomic order, records will be written for mates that are in

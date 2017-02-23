@@ -161,7 +161,7 @@ public class ScatterIntervalsByNs extends CommandLineProgram {
             preliminaryIntervals.add(new Interval(rec.getSequenceName(), start + 1, bytes.length, false, nBlockIsOpen ? Nmer : ACGTmer));
         }
 
-        // now that we have the whole list, we need to remove the short Nmers.
+        // now that we have the whole list, we need to get the short Nmers.
         // process the list, replacing trios with short Nmers in the middle with longer intervals:
         while (!preliminaryIntervals.isEmpty()) {
 
@@ -185,7 +185,7 @@ public class ScatterIntervalsByNs extends CommandLineProgram {
                         preliminaryIntervals.get(0).getStart(),
                         preliminaryIntervals.get(2).getEnd(), false, ACGTmer);
 
-                //remove the first 3 elements of the list
+                //get the first 3 elements of the list
                 for (int i = 0; i < 3; ++i) {
                     preliminaryIntervals.remove(0);
                 }

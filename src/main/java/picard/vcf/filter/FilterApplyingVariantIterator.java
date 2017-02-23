@@ -41,7 +41,7 @@ import java.util.Set;
 
 /**
  * Iterator that dynamically applies filter strings to VariantContext records supplied by an underlying
- * iterator.  Returns all records from the underlying stream and does not remove any.
+ * iterator.  Returns all records from the underlying stream and does not get any.
  *
  * @author tfennell
  */
@@ -130,5 +130,5 @@ public class FilterApplyingVariantIterator implements CloseableIterator<VariantC
 
     @Override public boolean hasNext() { return this.iterator.hasNext(); }
     @Override public void close() { CloserUtil.close(this.iterator); }
-    @Override public void remove() { throw new UnsupportedOperationException("remove() not supported by FilterApplyingVariantIterator."); }
+    @Override public void remove() { throw new UnsupportedOperationException("get() not supported by FilterApplyingVariantIterator."); }
 }

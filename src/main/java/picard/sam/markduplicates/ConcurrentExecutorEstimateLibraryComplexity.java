@@ -46,7 +46,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     /**
      * Classes
      */
-    //Temporary structure, used in sorting via StreamAPI (doStreamSort)
+    // Temporary structure, used in sorting via StreamAPI (doStreamSort)
     private class PrsAndRec {
         public final SAMRecord rec;
         public final PairedReadSequence prs;
@@ -60,7 +60,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    //Temporary structure, used while processing histograms via StreamAPI
+    // Temporary structure, used while processing histograms via StreamAPI
     protected class HistoAndMetric {
         final Histogram<Integer> duplicationHisto;
         final DuplicationMetrics metrics;
@@ -73,7 +73,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    //Temporary structure, used while processing histograms via StreamAPI
+    // Temporary structure, used while processing histograms via StreamAPI
     protected class HistoTuple {
         public final Histogram<Integer> duplicate;
         public final Histogram<Integer> optical;
@@ -84,7 +84,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    //Replacement of the pendingByName (Concurrent)HashMap
+    // Replacement of the pendingByName (Concurrent)HashMap
     protected class ConcurrentPendingByNameCollection {
         private final int MAP_INIT_CAPACITY = 100;
 
@@ -199,31 +199,225 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             }
             algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
         }
+
+        public void processGroup(final Map.Entry<String, List<PairedReadSequence>> entry) {
+            processGroup(entry.getKey(), entry.getValue());
+        }
+    }
+
+    //
+    protected class ConcurrentSupplier<T> {
+        private final int stackcapacity;
+
+        private long counter = 0;
+
+        private final List<T> poisonPill = Collections.emptyList();
+        // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
+        private final AtomicInteger locker = new AtomicInteger(0);
+        private final BlockingQueue<List<T>> queue;
+        private List<T> stack;
+
+        public ConcurrentSupplier(int stackCapacity) {
+            this.stackcapacity = stackCapacity;
+            this.queue = new LinkedBlockingDeque<>();
+            this.stack = new ArrayList<>();
+        }
+
+        public ConcurrentSupplier(int stackCapacity, int queueCapacity) {
+            this.stackcapacity = stackCapacity;
+            this.queue = new LinkedBlockingDeque<>(queueCapacity);
+            this.stack = new ArrayList<>(stackCapacity);
+        }
+
+        public void add(T item) {
+            stack.add(item);
+
+            counter++;
+
+            if(stack.size() == stackcapacity) {
+                putToQueue();
+                stack = new ArrayList<>(stackcapacity);
+            }
+        }
+
+        private void putToQueue() {
+            try                             { queue.put(stack); }
+            catch (InterruptedException e)  { e.printStackTrace(); }
+        }
+
+        private void putToQueue(List<T> stack) {
+            try                             { queue.put(stack); }
+            catch (InterruptedException e)  { e.printStackTrace(); }
+        }
+
+        //
+        public void tryAddRest() {
+            if(!stack.isEmpty())
+                putToQueue();
+        }
+
+        //
+        public List<T> process() {
+            locker.incrementAndGet();
+            try                             { return queue.take(); }
+            catch (InterruptedException e)  { e.printStackTrace(); }
+            return Collections.emptyList();
+        }
+
+        //
+        public void confirm() {
+            locker.decrementAndGet();
+        }
+
+        // Waiting for all threads finish their job and check for missed group stacks
+        public void awaitConfirmation() {
+            while (locker.get() != 0) {
+                if(locker.get() == 0)
+                    break;
+            }
+        }
+
+        public void putPoisonPill() {
+            putToQueue(poisonPill);
+        }
     }
 
     /**
      * Predicates
      */
-    // check for poison pill into doWork methodd
+    // Check for poison pill into doWork method
     protected final Predicate<List<List<PairedReadSequence>>> isPairsPoisonPill = (pairs -> (pairs.isEmpty()));
 
-    // check for poison pill into doSort methodd
+    // Check for poison pill into doSort method
     private final Predicate<List<SAMRecord>> isRecordPoisonPill = (samRecords -> (samRecords.isEmpty()));
 
-    //Check if the pair is OK to add to sorter
+    // Check if the pair is OK to add to sorter
     private final Predicate<PairedReadSequence> isPairValid = (pair) -> (pair.read1 != null
                                                                       && pair.read2 != null
                                                                       && pair.qualityOk);
-    //Filter is Record valid or not
+    // Filter is Record valid or not
     private final Predicate<SAMRecord> isRecValid = (rec) -> (rec.getReadPairedFlag()
                                                           && (rec.getFirstOfPairFlag() || rec.getSecondOfPairFlag())
                                                           && !rec.isSecondaryOrSupplementary());
-
     /**
      * Different sort algorithms
      */
-    // Sorting via StreamAPI
-    //IS NOT WORKING PROPERLY, some bugs in parallel process pairs, when fill bases or wahtever
+    //Sorting with ExecutorService
+    protected ElcSmartSortResponse doSmartSort(final boolean useBarcodes) {
+        log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
+
+        final long startTime = System.nanoTime();
+
+        final List<SAMRecord> recordsPoisonPill = Collections.emptyList();
+
+        final List<SAMReadGroupRecord> readGroups = new ArrayList<>();
+        final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
+        final ConcurrentSortingCollection<PairedReadSequence>
+                sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
+                !useBarcodes
+                        ? new PairedReadCodec()
+                        : new PairedReadWithBarcodesCodec(),
+                new PairedReadComparator(),
+                MAX_RECORDS_IN_RAM,
+                TMP_DIR);
+
+        final int recordListSize = RECORD_PROCESS_STACK_SIZE;
+        final ExecutorService pool = Executors.newFixedThreadPool(2);
+        final BlockingQueue<List<SAMRecord>> queueRecords = new ArrayBlockingQueue<>(10);
+        List<SAMRecord> records = new ArrayList<>(recordListSize);
+
+        // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
+        final AtomicInteger locker = new AtomicInteger(0);
+
+        //final Object sync = new Object();
+
+        // Loop through the input files and pick out the read sequences etc.
+        for (final File f : INPUT) {
+            final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
+            readGroups.addAll(in.getFileHeader().getReadGroups());
+            //final Map<String, PairedReadSequence> pendingByName = new ConcurrentHashMap<>();
+            final ConcurrentPendingByNameCollection pendingByName
+                    = new ConcurrentPendingByNameCollection(useBarcodes, opticalDuplicateFinder, readGroups);
+
+            pool.execute(() -> {
+                while (!Thread.interrupted()) {
+                    try {
+                        final List<SAMRecord> rec = queueRecords.take();
+
+                        // If poison pill
+                        if (rec.isEmpty())
+                            return;
+
+                        pool.submit(() -> {
+                            for (SAMRecord record : rec) {
+                                // Read passes quality check if both ends meet the mean quality criteria
+                                PairedReadSequence prs = processPairs(pendingByName.get(record),
+                                        record,
+                                        useBarcodes);
+                                progress.record(record);
+
+                                if (isPairValid.test(prs))
+                                    sorter.add(prs);
+                            }
+                            locker.decrementAndGet();
+                        });
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            });
+
+            for (SAMRecord rec : in) {
+                if (!isRecValid.test(rec))
+                    continue;
+
+                records.add(rec);
+
+                if (records.size() >= recordListSize) {
+                    try {
+                        queueRecords.put(records);
+                        locker.incrementAndGet();
+                        records = new ArrayList<>(recordListSize);
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+
+            if (!records.isEmpty()) {
+                try {
+                    queueRecords.put(records);
+                    locker.incrementAndGet();
+                    queueRecords.put(recordsPoisonPill);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            // Some useless work to wait for locks & sorter to spill
+            while (locker.get() != 0 || sorter.isSpillingToDisk()) {
+                if (locker.get() == 0 && !sorter.isSpillingToDisk())
+                    break;
+            }
+            CloserUtil.close(in);
+        }
+
+        pool.shutdown();
+        try {
+            pool.awaitTermination(1000, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+
+        log.info("SORTING - SMART-SORT ELC (ms) : "
+                + (sortTime = (double)((System.nanoTime() - startTime) / 1000000)));
+
+        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+        return new ElcSmartSortResponse(sorter, readGroups, progress);
+    }
+
+    // Sorting via Streams
+    //IS NOT WORKING PROPERLY, some bugs in parallel process pairs, when fill bases or what ever
     protected ElcSmartSortResponse doStreamSort(final boolean useBarcodes) {
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
@@ -285,27 +479,26 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
 
-    //Sorting with ExecutorService
-    protected ElcSmartSortResponse doSmartSort(final boolean useBarcodes) {
+    //Sorting with ForkJoinPool difference is in ForkJoinPool instead of doSmartSort
+    protected ElcSmartSortResponse doPoolSort(final boolean useBarcodes) {
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
         final long startTime = System.nanoTime();
-
         final List<SAMRecord> recordsPoisonPill = Collections.emptyList();
 
-        final List<SAMReadGroupRecord> readGroups = new ArrayList<>();
+        final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
         final ConcurrentSortingCollection<PairedReadSequence>
                 sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
-                    !useBarcodes
-                            ? new PairedReadCodec()
-                            : new PairedReadWithBarcodesCodec(),
-                    new PairedReadComparator(),
-                    MAX_RECORDS_IN_RAM,
-                    TMP_DIR);
+                !useBarcodes
+                        ? new PairedReadCodec()
+                        : new PairedReadWithBarcodesCodec(),
+                new PairedReadComparator(),
+                MAX_RECORDS_IN_RAM,
+                TMP_DIR);
 
         final int recordListSize = RECORD_PROCESS_STACK_SIZE;
-        final ExecutorService pool = Executors.newFixedThreadPool(2);
+        final ForkJoinPool pool = new ForkJoinPool();
         final BlockingQueue<List<SAMRecord>> queueRecords = new ArrayBlockingQueue<>(10);
         List<SAMRecord> records = new ArrayList<>(recordListSize);
 
@@ -328,15 +521,15 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                         final List<SAMRecord> rec = queueRecords.take();
 
                         // If poison pill
-                        if (rec.isEmpty())
+                        if(rec.equals(recordsPoisonPill))
                             return;
 
                         pool.submit(() -> {
                             for (SAMRecord record : rec) {
                                 // Read passes quality check if both ends meet the mean quality criteria
                                 PairedReadSequence prs = processPairs(pendingByName.get(record),
-                                                                            record,
-                                                                            useBarcodes);
+                                        record,
+                                        useBarcodes);
                                 progress.record(record);
 
                                 if (isPairValid.test(prs))
@@ -377,11 +570,12 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 }
             }
 
-            // Some useless work to wait for locks & sorter to spill
-            while (locker.get() != 0 || sorter.isSpillingToDisk()) {
-                if (locker.get() == 0 && !sorter.isSpillingToDisk())
+            // Some useless work to wait for locks
+            while (locker.get() != 0 || sorter.isSpillingToDisk()){
+                if(locker.get() == 0 && !sorter.isSpillingToDisk())
                     break;
             }
+
             CloserUtil.close(in);
         }
 
@@ -392,8 +586,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             e.printStackTrace();
         }
 
-        log.info("SORTING - SMART-SORT ELC (ms) : "
-                + (sortTime = (double)((System.nanoTime() - startTime) / 1000000)));
+        log.info("SORTING - POOL-SORT ELC (ms) : "
+                + (sortTime = (double)((System.nanoTime() - startTime)/1000000)));
 
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
         return new ElcSmartSortResponse(sorter, readGroups, progress);
@@ -509,121 +703,10 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
 
-    //Sorting with ForkJoinPool difference is in ForkJoinPool instead of doSmartSort
-    protected ElcSmartSortResponse doPoolSort(final boolean useBarcodes) {
-        log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
-
-        final long startTime = System.nanoTime();
-        final List<SAMRecord> recordsPoisonPill = Collections.emptyList();
-
-        final List<SAMReadGroupRecord> readGroups = new ArrayList<SAMReadGroupRecord>();
-        final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
-        final ConcurrentSortingCollection<PairedReadSequence>
-                sorter = ConcurrentSortingCollection.newInstance(PairedReadSequence.class,
-                    !useBarcodes
-                            ? new PairedReadCodec()
-                            : new PairedReadWithBarcodesCodec(),
-                    new PairedReadComparator(),
-                    MAX_RECORDS_IN_RAM,
-                    TMP_DIR);
-
-        final int recordListSize = RECORD_PROCESS_STACK_SIZE;
-        final ForkJoinPool pool = new ForkJoinPool();
-        final BlockingQueue<List<SAMRecord>> queueRecords = new ArrayBlockingQueue<>(10);
-        List<SAMRecord> records = new ArrayList<>(recordListSize);
-
-        // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
-        final AtomicInteger locker = new AtomicInteger(0);
-
-        //final Object sync = new Object();
-
-        // Loop through the input files and pick out the read sequences etc.
-        for (final File f : INPUT) {
-            final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
-            readGroups.addAll(in.getFileHeader().getReadGroups());
-            //final Map<String, PairedReadSequence> pendingByName = new ConcurrentHashMap<>();
-            final ConcurrentPendingByNameCollection pendingByName
-                    = new ConcurrentPendingByNameCollection(useBarcodes, opticalDuplicateFinder, readGroups);
-
-            pool.execute(() -> {
-                while (!Thread.interrupted()) {
-                    try {
-                        final List<SAMRecord> rec = queueRecords.take();
-
-                        // If poison pill
-                        if(rec.equals(recordsPoisonPill))
-                            return;
-
-                        pool.submit(() -> {
-                            for (SAMRecord record : rec) {
-                                // Read passes quality check if both ends meet the mean quality criteria
-                                PairedReadSequence prs = processPairs(pendingByName.get(record),
-                                                                            record,
-                                                                            useBarcodes);
-                                progress.record(record);
-
-                                if (isPairValid.test(prs))
-                                    sorter.add(prs);
-                            }
-                            locker.decrementAndGet();
-                        });
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                }
-            });
-
-            for (SAMRecord rec : in) {
-                if (!isRecValid.test(rec))
-                    continue;
-
-                records.add(rec);
-
-                if (records.size() >= recordListSize) {
-                    try {
-                        queueRecords.put(records);
-                        locker.incrementAndGet();
-                        records = new ArrayList<>(recordListSize);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                }
-            }
-
-            if (!records.isEmpty()) {
-                try {
-                    queueRecords.put(records);
-                    locker.incrementAndGet();
-                    queueRecords.put(recordsPoisonPill);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-
-            // Some useless work to wait for locks
-            while (locker.get() != 0 || sorter.isSpillingToDisk()){
-                if(locker.get() == 0 && !sorter.isSpillingToDisk())
-                    break;
-            }
-
-            CloserUtil.close(in);
-        }
-
-        pool.shutdown();
-        try {
-            pool.awaitTermination(1000, TimeUnit.SECONDS);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-
-        log.info("SORTING - POOL-SORT ELC (ms) : "
-                + (sortTime = (double)((System.nanoTime() - startTime)/1000000)));
-
-        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
-        return new ElcSmartSortResponse(sorter, readGroups, progress);
-    }
-
-    //Log invalid histogramm prs
+    /**
+     * ENCAPSULATED LOGIC
+     */
+    //Log invalid histogram prs
     protected void logInvalidGroup(List<PairedReadSequence> group, int meanGroupSize) {
         final PairedReadSequence prs = group.get(0);
         log.warn("Omitting group with over " + MAX_GROUP_RATIO + " times the expected mean number of read pairs. " +
@@ -633,9 +716,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 StringUtil.bytesToString(prs.read2, 0, MIN_IDENTICAL_BASES));
     }
 
-    /**
-     * INCAPSULATED LOGIC
-     */
     //Takes temporary object (PrsAndRec), process it, fill reads and returns PairedReadSequence
     private PairedReadSequence processPairs(final PairedReadSequence prs,
                                             final SAMRecord record,
@@ -665,37 +745,20 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
         return prs;
     }
-
-    //Process & fill histograms
-    //NOT WORKING PROPERLY
-    protected void processHisto(Map.Entry<String, List<PairedReadSequence>> entry,
-                                Map<String, Histogram<Integer>> opticalHistosByLibrary,
-                                Map<String, Histogram<Integer>> duplicationHistosByLibrary,
-                                ElcDuplicatesFinderResolver algorithmResolver) {
-        final String library = entry.getKey();
-        final List<PairedReadSequence> seqs = entry.getValue();
-
-        Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-        Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-
-        if (duplicationHisto == null) {
-            duplicationHisto = new Histogram<>("duplication_group_count", library);
-            opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-            duplicationHistosByLibrary.put(library, duplicationHisto);
-            opticalHistosByLibrary.put(library, opticalHisto);
-        }
-        algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-    }
-
     /**
-     * CONSTANS
+     * CONSTANTS
      */
     // Stack size to process in sort method
-    protected final int RECORD_PROCESS_STACK_SIZE = MAX_RECORDS_IN_RAM / 1000;
+    final int RECORD_PROCESS_STACK_SIZE = MAX_RECORDS_IN_RAM / 1000;
 
     //Group size to process stack in doWork
-    protected final int GROUP_PROCESS_STACK_SIZE = 50000;
+    final int GROUP_PROCESS_STACK_SIZE = 50000;
 
+    /**
+     * doWork main calculation method
+     * Used to process histograms
+     * @return
+     */
     protected int doWork() {
         IOUtil.assertFilesAreReadable(INPUT);
 
@@ -717,104 +780,54 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
 
+        final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
+                = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, 4);
+
         final AtomicInteger groupsProcessed = new AtomicInteger(0);
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
-        final ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
-                MAX_DIFF_RATE,
-                MAX_READ_LENGTH,
-                MIN_IDENTICAL_BASES,
-                useBarcodes,
-                opticalDuplicateFinder
-        );
-
-        final int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
-        final int streamable = streamReady / 10000;
-
-        final List<List<PairedReadSequence>> groupPoisonPill = Collections.emptyList();
         final ExecutorService pool = Executors.newCachedThreadPool();
-
         final Object sync = new Object();
-
-        List<List<PairedReadSequence>> groupStack = new ArrayList<>();
-        final BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>(2);
-
-        // Countdown for active threads (cause Executor is kinda stuck in awaitTermination, don't know why)
-        final AtomicInteger locker = new AtomicInteger(0);
 
         final long startSortIterateTime = System.nanoTime();
 
         // pool manager, receives stack of groups, and make worker to process them
-        // Somehow we process less groups then in sequential doWork 241000 vs 715000,
-        // concurrentSorter has bugs, but where... who knows
         pool.execute(() -> {
             while (!Thread.interrupted()) {
-                try {
-                    final List<List<PairedReadSequence>> groupList = groupQueue.take();
+                final List<List<PairedReadSequence>> groupList = groupSupplier.process();
 
-                    // Poison pill check
-                    if(groupList.isEmpty())
-                        return;
+                // Poison pill check
+                if (groupList.isEmpty())
+                    return;
 
-                    pool.submit(() ->
-                    {
-                        for (List<PairedReadSequence> group : groupList) {
-                            // Get the next group and split it apart by library
-                            if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
-                              logInvalidGroup(group, meanGroupSize);
-                            else {
-
-                                splitByLibrary(group, readGroups).entrySet().stream()
-                                        //.parallel()
-                                        .unordered()
-                                        .forEach(entry -> histoCollection.processGroup( entry.getKey(),
-                                                                                        entry.getValue()));
-                                // Now process the reads by library
-/*                                for (final Map.Entry<String, List<PairedReadSequence>> entry
-                                                            : splitByLibrary(group, readGroups).entrySet())
-                                    histoCollection.processGroup(entry.getKey(), entry.getValue());*/
-
-                                groupsProcessed.incrementAndGet();
-                            }
+                pool.submit(() ->
+                {
+                    for (List<PairedReadSequence> group : groupList) {
+                        // Get the next group and split it apart by library
+                        if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
+                            logInvalidGroup(group, meanGroupSize);
+                        else {
+                            // Now process the reads by library
+                            splitByLibrary(group, readGroups).entrySet().stream()
+                                    //.parallel()
+                                    .unordered()
+                                    .forEach(histoCollection::processGroup);
                         }
-                        locker.decrementAndGet();
-                    });
-                } catch (InterruptedException ex) {
-                    ex.printStackTrace();
-                }
+                    }
+                    groupSupplier.confirm();
+                });
             }
         });
 
         // Iterating through sorted groups, and making stack to process them
         while (iterator.hasNext()) {
-            try {
-                groupStack.add(getNextGroup(iterator));
-
-                if (groupStack.size() >= GROUP_PROCESS_STACK_SIZE) {
-                    groupQueue.put(groupStack);
-                    locker.incrementAndGet();
-                    groupStack = new ArrayList<>(streamable);
-                }
-            } catch (NoSuchElementException | InterruptedException e) {
-                e.printStackTrace();
-            }
+            try                              { groupSupplier.add(getNextGroup(iterator)); }
+            catch (NoSuchElementException e) { e.printStackTrace(); }
         }
 
-        if (!groupStack.isEmpty()) {
-            try {
-                groupQueue.put(groupStack);
-                locker.incrementAndGet();
-                groupStack = new ArrayList<>();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-
-        // Waiting for all threads finish their job and check for missed group stacks
-        while (locker.get() != 0) {
-            if(locker.get() == 0)
-                break;
-        }
+        groupSupplier.tryAddRest();
+        groupSupplier.awaitConfirmation();
+        groupSupplier.putPoisonPill();
 
         log.info("SORTER - EXECUTOR (ms) : " + (double)(System.nanoTime() - startSortIterateTime) / 1000000);
 
@@ -824,10 +837,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         final long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
-        // Poison pill
         for (final String library : histoCollection.getLibraries())
         {
-            locker.incrementAndGet();
             pool.execute(() ->
             {
                 final Histogram<Integer> duplicationHisto = histoCollection.getDuplicationHisto(library);
@@ -857,12 +868,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                     file.addHistogram(duplicationHisto);
                 }
             });
-        }
-
-        try {
-            groupQueue.put(groupPoisonPill);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
         }
 
         pool.shutdown();

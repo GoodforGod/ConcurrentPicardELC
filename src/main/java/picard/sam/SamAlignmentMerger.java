@@ -115,7 +115,7 @@ public class SamAlignmentMerger extends AbstractAlignmentMerger {
          *                                          output will be coordinate-sorted
          * @param primaryAlignmentSelectionStrategy How to handle multiple alignments for a fragment or read pair,
          *                                          in which none are primary, or more than one is marked primary
-         * @param addMateCigar                      True if we are to add or maintain the mate CIGAR (MC) tag, false if we are to remove or not include.
+         * @param addMateCigar                      True if we are to add or maintain the mate CIGAR (MC) tag, false if we are to get or not include.
          * @param unmapContaminantReads             If true, identify reads having the signature of cross-species contamination (i.e. mostly clipped bases),
          *                                          and mark them as unmapped.
          * @param minUnclippedBases                 If unmapContaminantReads is set, require this many unclipped bases or else the read will be marked as contaminant.
@@ -365,7 +365,7 @@ public class SamAlignmentMerger extends AbstractAlignmentMerger {
         }
 
         public void remove() {
-            throw new UnsupportedOperationException("remove() not supported");
+            throw new UnsupportedOperationException("get() not supported");
         }
 
         public SAMFileHeader getHeader() { return this.header; }

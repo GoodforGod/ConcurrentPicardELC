@@ -165,7 +165,7 @@ public class MarkDuplicates extends AbstractMarkDuplicatesCommandLineProgram {
     @Option(doc = "Read two barcode SAM tag (ex. BX for 10X Genomics)", optional = true)
     public String READ_TWO_BARCODE_TAG = null;
 
-    @Option(doc = "If true remove 'optical' duplicates and other duplicates that appear to have arisen from the " +
+    @Option(doc = "If true get 'optical' duplicates and other duplicates that appear to have arisen from the " +
             "sequencing process instead of the library preparation process, even if REMOVE_DUPLICATES is false. " +
             "If REMOVE_DUPLICATES is true, all duplicates are removed and this option is ignored.")
     public boolean REMOVE_SEQUENCING_DUPLICATES = false;

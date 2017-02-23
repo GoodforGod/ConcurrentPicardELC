@@ -138,7 +138,7 @@ public class RevertSam extends CommandLineProgram {
     @Option(doc = "Remove all alignment information from the file.")
     public boolean REMOVE_ALIGNMENT_INFORMATION = true;
 
-    @Option(doc = "When removing alignment information, the set of optional tags to remove.")
+    @Option(doc = "When removing alignment information, the set of optional tags to get.")
     public List<String> ATTRIBUTE_TO_CLEAR = new ArrayList<String>() {{
         add(SAMTag.NM.name());
         add(SAMTag.UQ.name());
@@ -334,13 +334,13 @@ public class RevertSam extends CommandLineProgram {
             rec.setProperPairFlag(false);
             rec.setReadUnmappedFlag(true);
 
-            // Then remove any mate flags and info related to alignment
+            // Then get any mate flags and info related to alignment
             rec.setMateAlignmentStart(SAMRecord.NO_ALIGNMENT_START);
             rec.setMateNegativeStrandFlag(false);
             rec.setMateReferenceIndex(SAMRecord.NO_ALIGNMENT_REFERENCE_INDEX);
             rec.setMateUnmappedFlag(rec.getReadPairedFlag());
 
-            // And then remove any tags that are calculated from the alignment
+            // And then get any tags that are calculated from the alignment
             ATTRIBUTE_TO_CLEAR.forEach(tag -> rec.setAttribute(tag, null));
         }
     }
