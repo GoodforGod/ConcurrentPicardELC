@@ -41,10 +41,6 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         super();
     }
 
-    public void Initiate(String[] args) {
-        instanceMain(args);
-    }
-
     protected int doWork() {
         IOUtil.assertFilesAreReadable(INPUT);
 
@@ -54,76 +50,42 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
 
         final ElcSmartSortResponse response = doSmartSort(useBarcodes);
 
-        long startTime = System.nanoTime();
+        final long startTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter = response.getSorter();
-        final ProgressLogger progress = response.getProgress();
-        final List<SAMReadGroupRecord> readGroups = response.getReadGroup();
+        final ProgressLogger progress                                = response.getProgress();
+        final List<SAMReadGroupRecord> readGroups                    = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
         final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
-        final Map<String, Histogram<Integer>> duplicationHistosByLibrary = new ConcurrentHashMap<>();
-        final Map<String, Histogram<Integer>> opticalHistosByLibrary = new ConcurrentHashMap<>();
-
-        int groupsProcessed = 0;
-
         //long lastLogTime = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
+        final Predicate<List<PairedReadSequence>> isGroupValid = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
 
-        ElcDuplicatesFinderResolver algorithmResolver = new ElcDuplicatesFinderResolver(
-                MAX_DIFF_RATE,
-                MAX_READ_LENGTH,
-                MIN_IDENTICAL_BASES,
-                useBarcodes,
-                opticalDuplicateFinder
-        );
+        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
+        final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
+                = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, 4);
 
-        Predicate<List<PairedReadSequence>> isGroupValid = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
-
-        int streamReady = (int)(progress.getCount() / meanGroupSize) / 2;
-        int streamable = streamReady / 1000;
-
-        final List<List<PairedReadSequence>> groupPoisonPill = Collections.emptyList();
         final ForkJoinPool pool = new ForkJoinPool();
-
-        final BlockingQueue<List<List<PairedReadSequence>>> groupQueue = new LinkedBlockingQueue<>();
-        final AtomicInteger locker = new AtomicInteger(0);
-
-        List<List<PairedReadSequence>> temporaryGroups = new ArrayList<>(streamable);
+        final Object sync = new Object();
 
         long startSortIterateTime = System.nanoTime();
         // Pool process sorted groups
         pool.execute(() -> {
             while (!Thread.interrupted()) {
-                try {
-                    final List<List<PairedReadSequence>> groupList = groupQueue.take();
-                    pool.submit(() -> {
+                final List<List<PairedReadSequence>> groupList = groupSupplier.process();
+
+                if (groupList.isEmpty())
+                    return;
+
+                pool.submit(() ->
                         groupList.stream()
                                 .parallel()
                                 .unordered()
                                 .map(grps -> splitByLibrary(grps, readGroups))
                                 .flatMap(entry -> entry.entrySet().stream())
-                                .forEach(entry -> {
-                                    final String library = entry.getKey();
-                                    final List<PairedReadSequence> seqs = entry.getValue();
-
-                                    Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                                    Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
-
-                                    if (duplicationHisto == null) {
-                                        duplicationHisto = new Histogram<>("duplication_group_count", library);
-                                        opticalHisto = new Histogram<>("duplication_group_count", "optical_duplicates");
-                                        duplicationHistosByLibrary.put(library, duplicationHisto);
-                                        opticalHistosByLibrary.put(library, opticalHisto);
-                                    }
-                                    algorithmResolver.resolveAndSearch(seqs, duplicationHisto, opticalHisto);
-                                });
-                        locker.decrementAndGet();
-                    });
-                } catch (InterruptedException ex) {
-                    ex.printStackTrace();
-                }
+                                .forEach(histoCollection::processGroup));
             }
         });
 
@@ -133,36 +95,12 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
             if (isGroupValid.test(group))
                 logInvalidGroup(group, meanGroupSize);
             else
-            {
-                ++groupsProcessed;
-                temporaryGroups.add(group);
-                if(temporaryGroups.size() >= GROUP_PROCESS_STACK_SIZE)
-                {
-                    try {
-                        groupQueue.put(temporaryGroups);
-                        locker.incrementAndGet();
-                        temporaryGroups = new ArrayList<>(streamable);
-                    } catch (InterruptedException e) {
-                        e.printStackTrace();
-                    }
-                }
-            }
+                groupSupplier.add(group);
         }
 
-        if (!temporaryGroups.isEmpty()) {
-            try {
-                groupQueue.put(temporaryGroups);
-                locker.incrementAndGet();
-                temporaryGroups = new ArrayList<>();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
-        }
-
-        while (locker.get() != 0) {
-          if(locker.get() == 0)
-              break;
-        }
+        groupSupplier.tryAddRest();
+        groupSupplier.awaitConfirmation();
+        groupSupplier.putPoisonPill();
 
         log.info("SORTER - STREAMED (ms) : "
                 + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
@@ -173,14 +111,11 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         final long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
-        final Object sync = new Object();
-
-        for (final String library : duplicationHistosByLibrary.keySet()) {
-            locker.incrementAndGet();
+        for (final String library : histoCollection.getLibraries()) {
             pool.execute(() ->
             {
-                final Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
-                final Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
+                final Histogram<Integer> duplicationHisto = histoCollection.getDuplicationHisto(library);
+                final Histogram<Integer> opticalHisto = histoCollection.getOpticalHisto(library);
                 final DuplicationMetrics metrics = new DuplicationMetrics();
 
                 metrics.LIBRARY = library;
@@ -199,35 +134,21 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                     }
                 }
                 metrics.calculateDerivedFields();
+
                 synchronized (sync) {
                     file.addMetric(metrics);
                     file.addHistogram(duplicationHisto);
                 }
-                locker.decrementAndGet();
             });
         }
 
-        try {
-            groupQueue.put(groupPoisonPill);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-
-        while (locker.get() != 0) {
-          if(locker.get() == 0)
-              break;
-        }
-
         pool.shutdown();
-        try {
-            pool.awaitTermination(1, TimeUnit.MICROSECONDS);
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
+        try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
+        catch (InterruptedException e)  { e.printStackTrace(); }
 
-        long elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - THREAD POOL ELC (ms) : " + ((double)(elcTime - startMetricFile/1000000)));
-        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + (elcTime - startTime/1000000)));
+        double elcTime = System.nanoTime() / 1000000;
+        log.info("METRIC - THREAD POOL ELC (ms) : " + (elcTime - startMetricFile / 1000000));
+        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + (elcTime - startTime / 1000000)));
 
         file.write(OUTPUT);
         return 0;

@@ -872,8 +872,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         catch (InterruptedException e)  { e.printStackTrace(); }
 
         double elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - EXECUTOR ELC (ms) : " + ((elcTime - (double)startMetricFile / 1000000)));
-        log.info("TOTAL - EXECUTOR ELC (ms) : " + (sortTime + (elcTime - (double)startTime / 1000000)));
+        log.info("METRIC - EXECUTOR ELC (ms) : " + ((elcTime - startMetricFile / 1000000)));
+        log.info("TOTAL - EXECUTOR ELC (ms) : " + (sortTime + (elcTime - startTime / 1000000)));
 
         file.write(OUTPUT);
         return 0;
