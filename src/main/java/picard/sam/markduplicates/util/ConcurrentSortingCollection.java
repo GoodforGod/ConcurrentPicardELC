@@ -218,6 +218,14 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
         return spillsInProgressCounter.get() != 0;
     }
 
+    // used cycle to loop and wait for spilling to over
+    public void awaitSpillingToDisk() {
+        while (isSpillingToDisk()) {
+            if(!isSpillingToDisk())
+                return;
+        }
+    }
+
     /**
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */

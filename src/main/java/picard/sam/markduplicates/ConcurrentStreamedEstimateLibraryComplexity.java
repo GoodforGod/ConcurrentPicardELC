@@ -14,12 +14,8 @@ import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
 
 import static java.lang.Math.decrementExact;
@@ -65,7 +61,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
 
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
-                = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, 4);
+                = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
 
         final ForkJoinPool pool = new ForkJoinPool();
         final Object sync = new Object();
@@ -74,7 +70,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         // Pool process sorted groups
         pool.execute(() -> {
             while (!Thread.interrupted()) {
-                final List<List<PairedReadSequence>> groupList = groupSupplier.process();
+                final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
 
                 if (groupList.isEmpty())
                     return;
@@ -100,7 +96,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
 
         groupSupplier.tryAddRest();
         groupSupplier.awaitConfirmation();
-        groupSupplier.putPoisonPill();
+        groupSupplier.finish();
 
         log.info("SORTER - STREAMED (ms) : "
                 + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);

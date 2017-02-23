@@ -16,7 +16,6 @@ import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.lang.Math.pow;
 
@@ -57,7 +56,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
-                = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, 4);
+                = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
 
         final ForkJoinPool pool = new ForkJoinPool();
         final Object sync = new Object();
@@ -66,7 +65,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         final long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
-                final List<List<PairedReadSequence>> groupList = groupSupplier.process();
+                final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
 
                 // Poison pill check
                 if (groupList.isEmpty())
@@ -94,7 +93,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
 
         groupSupplier.tryAddRest();
         groupSupplier.awaitConfirmation();
-        groupSupplier.putPoisonPill();
+        groupSupplier.finish();
 
         log.info("SORTER - EXECUTOR (ms) : " + (double)(System.nanoTime() - startSortIterateTime) / 1000000);
 
