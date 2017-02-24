@@ -340,8 +340,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
      * Functions
      */
     //
-    protected final Function<QueuePeekableIterator<PairedReadSequence>,
-            List<PairedReadSequence>> pairHandler = (iterator) ->
+    protected final Function<QueuePeekableIterator<PairedReadSequence>, List<PairedReadSequence>>
+                                                                        pairHandler = (iterator) ->
     {
         final List<PairedReadSequence> group = new ArrayList<>();
         final PairedReadSequence first = iterator.next();
@@ -740,8 +740,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
         return prs;
     }
-
-
     /**
      * CONSTANTS
      */
@@ -775,17 +773,15 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
         final ProgressLogger                                  progress   = response.getProgress();
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
-
-        final QueuePeekableIterator<PairedReadSequence> iterator
-                = new QueuePeekableIterator<>(sorter.iterator());
-
-        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> wrapper
-                = new QueueIteratorProducer<>(iterator, pairHandler);
-
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
-        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
+
+        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
+                = new QueueIteratorProducer<>(new QueuePeekableIterator<>(sorter.iterator()), pairHandler);
+
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
+
+        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
 
         //final ExecutorService pool = Executors.newFixedThreadPool(USED_THREADS);
         final ExecutorService pool = Executors.newCachedThreadPool();
@@ -799,7 +795,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
 
                 // Poison pill check
-                if (groupList.isEmpty())
+                if (isPairsPoisonPill.test(groupList))
                     return;
 
                 pool.submit(() ->
@@ -817,8 +813,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         });
 
         // Iterating through sorted groups, and making job to process them
-        while (wrapper.hasNext()) {
-            try                              { groupSupplier.add(wrapper.next()); }
+        while (pairProducer.hasNext()) {
+            try                              { groupSupplier.add(pairProducer.next()); }
             catch (NoSuchElementException e) { e.printStackTrace(); }
         }
 
@@ -828,7 +824,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         log.info("SORTER - EXECUTOR (ms) : " + (double)(System.nanoTime() - startSortIterateTime) / 1000000);
 
-        iterator.close();
+        pairProducer.finish();
         sorter.cleanup();
 
         final long startMetricFile = System.nanoTime();
@@ -877,59 +873,5 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         file.write(OUTPUT);
         return 0;
-    }
-
-    protected List<PairedReadSequence> tester(final QueuePeekableIterator<PairedReadSequence> iterator){
-        Function<PairedReadSequence, List<PairedReadSequence>> caller = (PairedReadSequence first) -> {
-            final List<PairedReadSequence> group = new ArrayList<>();
-            //final PairedReadSequence first = iterator.next();
-            group.add(first);
-
-            outer:
-            while (iterator.hasNext()) {
-                final PairedReadSequence next = iterator.peek();
-                for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
-                    if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
-                        break outer;
-                }
-                group.add(iterator.next());
-            }
-            return group;
-        };
-        return caller.apply(iterator.next());
-    }
-
-    protected List<PairedReadSequence> getNextGroup(final QueuePeekableIterator<PairedReadSequence> iterator) {
-        final List<PairedReadSequence> group = new ArrayList<>();
-        final PairedReadSequence first = iterator.next();
-        group.add(first);
-
-        outer:
-        while (iterator.hasNext()) {
-            final PairedReadSequence next = iterator.peek();
-            for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
-                if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
-                    break outer;
-            }
-            group.add(iterator.next());
-        }
-        return group;
-
-        /////////
-
-    /*    final List<PairedReadSequence> group = new ArrayList<PairedReadSequence>();
-        final PairedReadSequence first = iterator.next();
-        group.add(first);
-
-        outer:
-        while (iterator.hasNext()) {
-            final PairedReadSequence next = iterator.peek();
-            for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
-                if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
-                    break outer;
-            }
-            group.add(iterator.next());
-        }
-        return group;*/
     }
 }

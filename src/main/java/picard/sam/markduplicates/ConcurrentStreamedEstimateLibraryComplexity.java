@@ -72,7 +72,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
             while (!Thread.interrupted()) {
                 final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
 
-                if (groupList.isEmpty())
+                if (isPairsPoisonPill.test(groupList))
                     return;
 
                 pool.submit(() ->

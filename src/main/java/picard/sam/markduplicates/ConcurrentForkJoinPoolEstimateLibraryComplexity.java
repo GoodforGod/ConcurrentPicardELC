@@ -68,7 +68,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
                 final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
 
                 // Poison pill check
-                if (groupList.isEmpty())
+                if (isPairsPoisonPill.test(groupList))
                     return;
 
                 pool.submit(() ->
