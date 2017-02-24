@@ -6,9 +6,9 @@ package benchmark;
  * Time: 17:17
  */
 
-import picard.sam.markduplicates.ConcurrentExecutorEstimateLibraryComplexity;
+import picard.sam.markduplicates.ConcurrentPoolEstimateLibraryComplexity;
 import picard.sam.markduplicates.ConcurrentStreamedEstimateLibraryComplexity;
-import picard.sam.markduplicates.ConcurrentForkJoinPoolEstimateLibraryComplexity;
+import picard.sam.markduplicates.ConcurrentExecutorEstimateLibraryComplexity;
 import picard.sam.markduplicates.EstimateLibraryComplexity;
 
 /*
@@ -16,17 +16,7 @@ import picard.sam.markduplicates.EstimateLibraryComplexity;
  */
 public class BenchmarkELC
 {
-    private static void Initialize() {
-
-    }
-
-    public static void main(String[] args)
-    {
-        //new EstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
-        new ConcurrentStreamedEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
-    }
-
-    private static void Filalize() {
-
+    public static void main(String[] args) {
+        new ConcurrentPoolEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 }

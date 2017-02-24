@@ -46,7 +46,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ElcSmartSortResponse response = doPoolSort(useBarcodes);
+        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
 
         final long doWorkStartTime = System.nanoTime();
 
@@ -58,7 +58,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         //final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
 
         final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
-                = new QueueIteratorProducer<>(new QueuePeekableIterator<>(sorter.iterator()), pairHandler);
+                = new QueueIteratorProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
 
         //long lastLogTime = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));

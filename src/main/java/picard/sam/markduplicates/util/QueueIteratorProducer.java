@@ -6,6 +6,8 @@ package picard.sam.markduplicates.util;
  * Time: 15:02
  */
 
+import htsjdk.samtools.util.PeekableIterator;
+
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.function.Function;
@@ -15,14 +17,29 @@ import java.util.function.Function;
  */
 public class QueueIteratorProducer<Object, Produced>
 {
-    private final QueuePeekableIterator<Object> iterator;
-    private final Function<QueuePeekableIterator<Object>, Produced> handler;
+    private final int JOB_CAPACITY;
+    private final int JOB_CAPACITY_DAFAULT = 8;
+
+    private final PeekableIterator<Object> iterator;
+    private final Function<PeekableIterator<Object>, Produced> handler;
     private final BlockingQueue<Produced> queue;
 
-    public QueueIteratorProducer(QueuePeekableIterator<Object> iterator, Function<QueuePeekableIterator<Object>, Produced> handler) {
+    public QueueIteratorProducer(PeekableIterator<Object> iterator,
+                                 Function<PeekableIterator<Object>, Produced> handler,
+                                 int capacity) {
         this.iterator = iterator;
         this.handler = handler;
-        this.queue = new LinkedBlockingQueue<>(iterator.CAPACITY);
+        this.JOB_CAPACITY = capacity;
+        this.queue = new LinkedBlockingQueue<>(JOB_CAPACITY);
+        start();
+    }
+
+    public QueueIteratorProducer(PeekableIterator<Object> iterator,
+                                 Function<PeekableIterator<Object>, Produced> handler) {
+        this.iterator = iterator;
+        this.handler = handler;
+        this.JOB_CAPACITY = JOB_CAPACITY_DAFAULT;
+        this.queue = new LinkedBlockingQueue<>(JOB_CAPACITY);
         start();
     }
 

@@ -340,7 +340,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
      * Functions
      */
     //
-    protected final Function<QueuePeekableIterator<PairedReadSequence>, List<PairedReadSequence>>
+    protected final Function<PeekableIterator<PairedReadSequence>, List<PairedReadSequence>>
                                                                         pairHandler = (iterator) ->
     {
         final List<PairedReadSequence> group = new ArrayList<>();
@@ -770,33 +770,31 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         IOUtil.assertFilesAreReadable(INPUT);
 
         final boolean useBarcodes   = (null != BARCODE_TAG
-                                    || null != READ_ONE_BARCODE_TAG
-                                    || null != READ_TWO_BARCODE_TAG);
+                || null != READ_ONE_BARCODE_TAG
+                || null != READ_TWO_BARCODE_TAG);
 
         // Results from the doSort
-        final ElcSmartSortResponse response = doPoolSort(useBarcodes);
+        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
+
         final long doWorkStartTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
         final ProgressLogger                                  progress   = response.getProgress();
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
 
+        // Now go through the sorted reads and attempt to find duplicates
+        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
+
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
-        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
-                = new QueueIteratorProducer<>(new QueuePeekableIterator<>(sorter.iterator()), pairHandler);
-
+        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
 
-        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
-
-        //final ExecutorService pool = Executors.newFixedThreadPool(USED_THREADS);
-        final ExecutorService pool = Executors.newCachedThreadPool();
+        final ForkJoinPool pool = new ForkJoinPool();
         final Object sync = new Object();
 
-        // pool manager, receives job of groups, and make worker to process them
-        // Now go through the sorted reads and attempt to find duplicates
+        // pool manager, receives stack of groups, and make worker to process them
         final long groupStartTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
@@ -810,7 +808,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 {
                     // Get the next group and split it apart by library
                     for (List<PairedReadSequence> group : groupList) {
-
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
                             logInvalidGroup(group, meanGroupSize);
                         else
@@ -821,9 +818,9 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             }
         });
 
-        // Iterating through sorted groups, and making job to process them
-        while (pairProducer.hasNext()) {
-            try                              { groupSupplier.add(pairProducer.next()); }
+        // Iterating through sorted groups, and making stack to process them
+        while (iterator.hasNext()) {
+            try                              { groupSupplier.add(getNextGroup(iterator)); }
             catch (NoSuchElementException e) { e.printStackTrace(); }
         }
 
@@ -831,9 +828,10 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         groupSupplier.awaitConfirmation();
         groupSupplier.finish();
 
-        final double groupEndTime = System.nanoTime();
+        double groupEndTime = System.nanoTime();
 
-        pairProducer.finish();
+        // FASTER THAN EXECUTOR, FOR 1.4 SECONDS!!!
+        iterator.close();
         sorter.cleanup();
 
         final long metricStartTime = System.nanoTime();

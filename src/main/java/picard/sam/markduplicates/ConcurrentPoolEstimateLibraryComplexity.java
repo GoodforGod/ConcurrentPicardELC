@@ -13,6 +13,7 @@ import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
+import picard.sam.markduplicates.util.QueueIteratorProducer;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -27,11 +28,11 @@ import static java.lang.Math.pow;
         usageShort = EstimateLibraryComplexity.USAGE_SUMMARY,
         programGroup = Metrics.class
 )
-public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentExecutorEstimateLibraryComplexity
+public class ConcurrentPoolEstimateLibraryComplexity extends ConcurrentExecutorEstimateLibraryComplexity
 {
-    protected final Log log = Log.getInstance(ConcurrentForkJoinPoolEstimateLibraryComplexity.class);
+    protected final Log log = Log.getInstance(ConcurrentPoolEstimateLibraryComplexity.class);
 
-    public ConcurrentForkJoinPoolEstimateLibraryComplexity(){
+    public ConcurrentPoolEstimateLibraryComplexity(){
         super();
     }
 
@@ -44,25 +45,29 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
 
         // Results from the doSort
         final ElcSmartSortResponse response = doSmartSort(useBarcodes);
-
         final long doWorkStartTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
         final ProgressLogger                                  progress   = response.getProgress();
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
 
-        // Now go through the sorted reads and attempt to find duplicates
-        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
+        final int meanGroupSize = (int)(Math.max(1, (progress.getCount() / 2) / (int)pow(4, MIN_IDENTICAL_BASES * 2)));
 
-        final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
-        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
+        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
+                = new QueueIteratorProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
+
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
 
-        final ForkJoinPool pool = new ForkJoinPool();
+        final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
+
+        //final ExecutorService pool = Executors.newFixedThreadPool(USED_THREADS);
+        //final ForkJoinPool pool = new ForkJoinPool();
+        final ExecutorService pool = Executors.newCachedThreadPool();
         final Object sync = new Object();
 
-        // pool manager, receives stack of groups, and make worker to process them
+        // pool manager, receives job of groups, and make worker to process them
+        // Now go through the sorted reads and attempt to find duplicates
         final long groupStartTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
@@ -76,6 +81,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
                 {
                     // Get the next group and split it apart by library
                     for (List<PairedReadSequence> group : groupList) {
+
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
                             logInvalidGroup(group, meanGroupSize);
                         else
@@ -86,9 +92,9 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
             }
         });
 
-        // Iterating through sorted groups, and making stack to process them
-        while (iterator.hasNext()) {
-            try                              { groupSupplier.add(getNextGroup(iterator)); }
+        // Iterating through sorted groups, and making job to process them
+        while (pairProducer.hasNext()) {
+            try                              { groupSupplier.add(pairProducer.next()); }
             catch (NoSuchElementException e) { e.printStackTrace(); }
         }
 
@@ -96,9 +102,9 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         groupSupplier.awaitConfirmation();
         groupSupplier.finish();
 
-        double groupEndTime = System.nanoTime();
+        final double groupEndTime = System.nanoTime();
 
-        iterator.close();
+        pairProducer.finish();
         sorter.cleanup();
 
         final long metricStartTime = System.nanoTime();
