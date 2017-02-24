@@ -107,6 +107,11 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         final long startMetricFile = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
+/*        histoCollection.getLibraries().stream()
+                .parallel()
+                .unordered()
+                .*/
+
         for (final String library : histoCollection.getLibraries()) {
             pool.execute(() ->
             {

@@ -17,11 +17,14 @@ import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 import picard.sam.markduplicates.util.OpticalDuplicateFinder;
+import picard.sam.markduplicates.util.QueueIteratorProducer;
+import picard.sam.markduplicates.util.QueuePeekableIterator;
 
 import java.io.File;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 import static java.lang.Math.nextUp;
@@ -280,6 +283,42 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
+    //
+    protected class ConcurrentMetrics {
+
+        private Map<Histogram<Integer>, DuplicationMetrics> duplicationMetrics = new ConcurrentHashMap<>();
+
+        public void add(final String library,
+                        final Histogram<Integer> duplicationHisto,
+                        final Histogram<Integer> opticalHisto) {
+            final DuplicationMetrics metrics = new DuplicationMetrics();
+
+            metrics.LIBRARY = library;
+            // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
+
+            //duplicationHisto.keySet().stream()
+
+            for (final Integer bin : duplicationHisto.keySet()) {
+                final double duplicateGroups = duplicationHisto.get(bin).getValue();
+                final double opticalDuplicates = (opticalHisto.get(bin) == null)
+                        ? 0
+                        : opticalHisto.get(bin).getValue();
+
+                if (duplicateGroups >= MIN_GROUP_COUNT) {
+                    metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
+                    metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
+                    metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
+                }
+            }
+            metrics.calculateDerivedFields();
+            duplicationMetrics.put(duplicationHisto, metrics);
+        }
+
+        public Set<Map.Entry<Histogram<Integer>, DuplicationMetrics>> getMetrics() {
+            return duplicationMetrics.entrySet();
+        }
+    }
+
     /**
      * Predicates
      */
@@ -297,6 +336,33 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     private final Predicate<SAMRecord> isRecValid = (rec) -> (rec.getReadPairedFlag()
                                                           && (rec.getFirstOfPairFlag() || rec.getSecondOfPairFlag())
                                                           && !rec.isSecondaryOrSupplementary());
+    /**
+     * Functions
+     */
+    //
+    protected final Function<QueuePeekableIterator<PairedReadSequence>,
+            List<PairedReadSequence>> pairHandler = (iterator) ->
+    {
+        final List<PairedReadSequence> group = new ArrayList<>();
+        final PairedReadSequence first = iterator.next();
+        group.add(first);
+
+        outer:
+        while (iterator.hasNext()) {
+            final PairedReadSequence next = iterator.peek();
+
+            if(next == null)
+                return group;
+
+            for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
+                if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
+                    break outer;
+            }
+            group.add(iterator.next());
+        }
+        return group;
+    };
+
     /**
      * Different sort algorithms
      */
@@ -674,6 +740,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
         return prs;
     }
+
+
     /**
      * CONSTANTS
      */
@@ -708,8 +776,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         final ProgressLogger                                  progress   = response.getProgress();
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
 
-        // Now go through the sorted reads and attempt to find duplicates
-        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
+        final QueuePeekableIterator<PairedReadSequence> iterator
+                = new QueuePeekableIterator<>(sorter.iterator());
+
+        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> wrapper
+                = new QueueIteratorProducer<>(iterator, pairHandler);
 
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
@@ -721,6 +792,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         final Object sync = new Object();
 
         // pool manager, receives job of groups, and make worker to process them
+        // Now go through the sorted reads and attempt to find duplicates
         final long startSortIterateTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
@@ -745,8 +817,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         });
 
         // Iterating through sorted groups, and making job to process them
-        while (iterator.hasNext()) {
-            try                              { groupSupplier.add(getNextGroup(iterator)); }
+        while (wrapper.hasNext()) {
+            try                              { groupSupplier.add(wrapper.next()); }
             catch (NoSuchElementException e) { e.printStackTrace(); }
         }
 
@@ -805,5 +877,59 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         file.write(OUTPUT);
         return 0;
+    }
+
+    protected List<PairedReadSequence> tester(final QueuePeekableIterator<PairedReadSequence> iterator){
+        Function<PairedReadSequence, List<PairedReadSequence>> caller = (PairedReadSequence first) -> {
+            final List<PairedReadSequence> group = new ArrayList<>();
+            //final PairedReadSequence first = iterator.next();
+            group.add(first);
+
+            outer:
+            while (iterator.hasNext()) {
+                final PairedReadSequence next = iterator.peek();
+                for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
+                    if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
+                        break outer;
+                }
+                group.add(iterator.next());
+            }
+            return group;
+        };
+        return caller.apply(iterator.next());
+    }
+
+    protected List<PairedReadSequence> getNextGroup(final QueuePeekableIterator<PairedReadSequence> iterator) {
+        final List<PairedReadSequence> group = new ArrayList<>();
+        final PairedReadSequence first = iterator.next();
+        group.add(first);
+
+        outer:
+        while (iterator.hasNext()) {
+            final PairedReadSequence next = iterator.peek();
+            for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
+                if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
+                    break outer;
+            }
+            group.add(iterator.next());
+        }
+        return group;
+
+        /////////
+
+    /*    final List<PairedReadSequence> group = new ArrayList<PairedReadSequence>();
+        final PairedReadSequence first = iterator.next();
+        group.add(first);
+
+        outer:
+        while (iterator.hasNext()) {
+            final PairedReadSequence next = iterator.peek();
+            for (int i = 0; i < MIN_IDENTICAL_BASES; ++i) {
+                if (first.read1[i] != next.read1[i] || first.read2[i] != next.read2[i])
+                    break outer;
+            }
+            group.add(iterator.next());
+        }
+        return group;*/
     }
 }
