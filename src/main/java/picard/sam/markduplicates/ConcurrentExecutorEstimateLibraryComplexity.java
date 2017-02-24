@@ -470,9 +470,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
         catch (InterruptedException e)  { e.printStackTrace(); }
 
-        log.info("SORTING - POOL-SORT ELC (ms) : "
+        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.",
+                progress.getCount()));
+        log.info("SORTING - SMART (ms) : "
                 + (sortTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+        log.info("----------------------------------------");
 
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
@@ -532,10 +534,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             CloserUtil.close(in);
         }
 
-        log.info("FILL SORTING - STREAM-SORT ELC (ms) : "
-                + (sortTime = (double) ((System.nanoTime() - startTime) / 1000000)));
         log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates." ,
                 progress.getCount()));
+        log.info("SORTING - STREAMED (ms) : "
+                + (sortTime = (double)((System.nanoTime() - startTime) / 1000000)));
+        log.info("----------------------------------------");
 
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
@@ -609,9 +612,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
         catch (InterruptedException e)  { e.printStackTrace(); }
 
-        log.info("SORTING - SMART-SORT ELC (ms) : "
+        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.",
+                progress.getCount()));
+        log.info("SORTING - POOL (ms) : "
                 + (sortTime = (double)((System.nanoTime() - startTime) / 1000000)));
-        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+        log.info("----------------------------------------");
 
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
@@ -691,9 +696,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
         catch (InterruptedException e)  { e.printStackTrace(); }
 
-        log.info("SORTING - POOL-SORT ELC (ms) : "
+        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.",
+                progress.getCount()));
+        log.info("SORTING - STREAM-POOL SORT (ms) : "
                 + (sortTime = (double)((System.nanoTime() - startTime)/1000000)));
-        log.info(String.format("Finished reading - read %d records - moving on to scanning for duplicates.", progress.getCount()));
+        log.info("----------------------------------------");
 
         return new ElcSmartSortResponse(sorter, readGroups, progress);
     }
@@ -768,11 +775,12 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         // Results from the doSort
         final ElcSmartSortResponse response = doPoolSort(useBarcodes);
-        final long startTime = System.nanoTime();
+        final long doWorkStartTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
         final ProgressLogger                                  progress   = response.getProgress();
         final List<SAMReadGroupRecord>                        readGroups = response.getReadGroup();
+
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
 
         final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
@@ -789,7 +797,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         // pool manager, receives job of groups, and make worker to process them
         // Now go through the sorted reads and attempt to find duplicates
-        final long startSortIterateTime = System.nanoTime();
+        final long groupStartTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
                 final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
@@ -802,10 +810,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 {
                     // Get the next group and split it apart by library
                     for (List<PairedReadSequence> group : groupList) {
+
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
                             logInvalidGroup(group, meanGroupSize);
                         else
-                            splitByLibrary(group, readGroups).forEach(histoCollection::processGroup);
+                            splitByLibrary(group, readGroups).entrySet().forEach(histoCollection::processGroup);
                     }
                     groupSupplier.confirm();
                 });
@@ -822,12 +831,12 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         groupSupplier.awaitConfirmation();
         groupSupplier.finish();
 
-        log.info("SORTER - EXECUTOR (ms) : " + (double)(System.nanoTime() - startSortIterateTime) / 1000000);
+        final double groupEndTime = System.nanoTime();
 
         pairProducer.finish();
         sorter.cleanup();
 
-        final long startMetricFile = System.nanoTime();
+        final long metricStartTime = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
         for (final String library : histoCollection.getLibraries())
@@ -867,9 +876,13 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         try                             { pool.awaitTermination( 1000, TimeUnit.SECONDS); }
         catch (InterruptedException e)  { e.printStackTrace(); }
 
-        double elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - EXECUTOR ELC (ms) : " + ((elcTime - startMetricFile / 1000000)));
-        log.info("TOTAL - EXECUTOR ELC (ms) : " + (sortTime + (elcTime - startTime / 1000000)));
+        double doWorkEndTime = System.nanoTime();
+        double doWorkTotal = (doWorkEndTime - doWorkStartTime) / 1000000;
+        log.info("GROUPS - EXECUTOR (ms) : " + ((groupEndTime - groupStartTime) / 1000000));
+        log.info("METRIC - EXECUTOR (ms) : " + ((doWorkEndTime - metricStartTime) / 1000000));
+        log.info("doWork - EXECUTOR (ms) : " + doWorkTotal);
+        log.info("----------------------------------------");
+        log.info("TOTAL  - EXECUTOR (ms) : " + (sortTime + doWorkTotal));
 
         file.write(OUTPUT);
         return 0;

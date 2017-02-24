@@ -13,6 +13,8 @@ import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
+import picard.sam.markduplicates.util.QueueIteratorProducer;
+import picard.sam.markduplicates.util.QueuePeekableIterator;
 
 import java.util.List;
 import java.util.concurrent.*;
@@ -44,16 +46,19 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                                     || null != READ_ONE_BARCODE_TAG
                                     || null != READ_TWO_BARCODE_TAG);
 
-        final ElcSmartSortResponse response = doSmartSort(useBarcodes);
+        final ElcSmartSortResponse response = doPoolSort(useBarcodes);
 
-        final long startTime = System.nanoTime();
+        final long doWorkStartTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter = response.getSorter();
         final ProgressLogger progress                                = response.getProgress();
         final List<SAMReadGroupRecord> readGroups                    = response.getReadGroup();
 
         // Now go through the sorted reads and attempt to find duplicates
-        final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
+        //final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
+
+        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
+                = new QueueIteratorProducer<>(new QueuePeekableIterator<>(sorter.iterator()), pairHandler);
 
         //long lastLogTime = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
@@ -66,7 +71,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         final ForkJoinPool pool = new ForkJoinPool();
         final Object sync = new Object();
 
-        long startSortIterateTime = System.nanoTime();
+        final long groupStartTime = System.nanoTime();
         // Pool process sorted groups
         pool.execute(() -> {
             while (!Thread.interrupted()) {
@@ -75,18 +80,20 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                 if (isPairsPoisonPill.test(groupList))
                     return;
 
-                pool.submit(() ->
-                        groupList.stream()
-                                .parallel()
-                                .unordered()
-                                .map(grps -> splitByLibrary(grps, readGroups))
-                                .flatMap(entry -> entry.entrySet().stream())
-                                .forEach(histoCollection::processGroup));
+                pool.submit(() -> {
+                    groupList.stream()
+                            .parallel()
+                            .unordered()
+                            .flatMap(grp -> splitByLibrary(grp, readGroups).entrySet().stream())
+                            .forEach(histoCollection::processGroup);
+
+                    groupSupplier.confirm();
+                });
             }
         });
 
-        while (iterator.hasNext()) {
-            final List<PairedReadSequence> group = getNextGroup(iterator);
+        while (pairProducer.hasNext()) {
+            final List<PairedReadSequence> group = pairProducer.next();
 
             if (isGroupValid.test(group))
                 logInvalidGroup(group, meanGroupSize);
@@ -98,13 +105,12 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         groupSupplier.awaitConfirmation();
         groupSupplier.finish();
 
-        log.info("SORTER - STREAMED (ms) : "
-                + (double)(System.nanoTime() - startSortIterateTime)/ 1000000);
+        double groupEndTime = System.nanoTime();
 
-        iterator.close();
+        pairProducer.finish();
         sorter.cleanup();
 
-        final long startMetricFile = System.nanoTime();
+        final long metricStartTime = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
 /*        histoCollection.getLibraries().stream()
@@ -147,9 +153,13 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
         catch (InterruptedException e)  { e.printStackTrace(); }
 
-        double elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - THREAD POOL ELC (ms) : " + (elcTime - startMetricFile / 1000000));
-        log.info("TOTAL - THREAD POOL ELC (ms) : " + (sortTime + (elcTime - startTime / 1000000)));
+        double doWorkEndTime = System.nanoTime();
+        double doWorkTotal = (doWorkEndTime - doWorkStartTime) / 1000000;
+        log.info("GROUPS - STREAMED (ms) : " + ((groupEndTime - groupStartTime) / 1000000));
+        log.info("METRIC - STREAMED (ms) : " + ((doWorkEndTime - metricStartTime) / 1000000));
+        log.info("doWork - STREAMED (ms) : " + doWorkTotal);
+        log.info("----------------------------------------");
+        log.info("TOTAL  - STREAMED (ms) : " + (sortTime + doWorkTotal));
 
         file.write(OUTPUT);
         return 0;

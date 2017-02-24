@@ -44,7 +44,8 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
 
         // Results from the doSort
         final ElcSmartSortResponse response = doSmartSort(useBarcodes);
-        final long startTime = System.nanoTime();
+
+        final long doWorkStartTime = System.nanoTime();
 
         final ConcurrentSortingCollection<PairedReadSequence> sorter     = response.getSorter();
         final ProgressLogger                                  progress   = response.getProgress();
@@ -62,7 +63,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         final Object sync = new Object();
 
         // pool manager, receives stack of groups, and make worker to process them
-        final long startSortIterateTime = System.nanoTime();
+        final long groupStartTime = System.nanoTime();
         pool.execute(() -> {
             while (!Thread.interrupted()) {
                 final List<List<PairedReadSequence>> groupList = groupSupplier.getJob();
@@ -78,7 +79,7 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
                             logInvalidGroup(group, meanGroupSize);
                         else
-                            splitByLibrary(group, readGroups).forEach(histoCollection::processGroup);
+                            splitByLibrary(group, readGroups).entrySet().forEach(histoCollection::processGroup);
                     }
                     groupSupplier.confirm();
                 });
@@ -95,12 +96,12 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         groupSupplier.awaitConfirmation();
         groupSupplier.finish();
 
-        log.info("SORTER - EXECUTOR (ms) : " + (double)(System.nanoTime() - startSortIterateTime) / 1000000);
+        double groupEndTime = System.nanoTime();
 
         iterator.close();
         sorter.cleanup();
 
-        final long startMetricFile = System.nanoTime();
+        final long metricStartTime = System.nanoTime();
         final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
         for (final String library : histoCollection.getLibraries())
@@ -140,9 +141,13 @@ public class ConcurrentForkJoinPoolEstimateLibraryComplexity extends ConcurrentE
         try                             { pool.awaitTermination( 1000, TimeUnit.SECONDS); }
         catch (InterruptedException e)  { e.printStackTrace(); }
 
-        double elcTime = System.nanoTime() / 1000000;
-        log.info("METRIC - EXECUTOR ELC (ms) : " + (elcTime - startMetricFile / 1000000));
-        log.info("TOTAL - EXECUTOR ELC (ms) : " + (sortTime + (elcTime - startTime / 1000000)));
+        double doWorkEndTime = System.nanoTime();
+        double doWorkTotal = (doWorkEndTime - doWorkStartTime) / 1000000;
+        log.info("GROUPS - FJ POOL (ms) : " + ((groupEndTime - groupStartTime) / 1000000));
+        log.info("METRIC - FJ POOL (ms) : " + ((doWorkEndTime - metricStartTime) / 1000000));
+        log.info("doWork - FJ POOL (ms) : " + doWorkTotal);
+        log.info("----------------------------------------");
+        log.info("TOTAL  - FJ POOL (ms) : " + (sortTime + doWorkTotal));
 
         file.write(OUTPUT);
         return 0;
