@@ -13,8 +13,7 @@ import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
-import picard.sam.markduplicates.util.QueueIteratorProducer;
-import picard.sam.markduplicates.util.QueuePeekableIterator;
+import picard.sam.markduplicates.util.QueueProducer;
 
 import java.util.List;
 import java.util.concurrent.*;
@@ -54,24 +53,19 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         final ProgressLogger progress                                = response.getProgress();
         final List<SAMReadGroupRecord> readGroups                    = response.getReadGroup();
 
-        // Now go through the sorted reads and attempt to find duplicates
-        //final PeekableIterator<PairedReadSequence> iterator = new PeekableIterator<>(sorter.iterator());
-
-        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
-                = new QueueIteratorProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
-
-        //long lastLogTime = System.currentTimeMillis();
         final int meanGroupSize = (int) (Math.max(1, (progress.getCount() / 2) / (int) pow(4, MIN_IDENTICAL_BASES * 2)));
         final Predicate<List<PairedReadSequence>> isGroupValid = (grp) -> grp.size() > meanGroupSize * MAX_GROUP_RATIO;
 
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
+        final QueueProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
+                = new QueueProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
 
         final ForkJoinPool pool = new ForkJoinPool();
         final Object sync = new Object();
-
         final long groupStartTime = System.nanoTime();
+
         // Pool process sorted groups
         pool.execute(() -> {
             while (!Thread.interrupted()) {
@@ -92,6 +86,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
             }
         });
 
+        // Now go through the sorted reads and attempt to find duplicates
         while (pairProducer.hasNext()) {
             final List<PairedReadSequence> group = pairProducer.next();
 
@@ -111,43 +106,14 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         sorter.cleanup();
 
         final long metricStartTime = System.nanoTime();
-        final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
+        final ConcurrentMetrics concurrentMetrics = new ConcurrentMetrics(histoCollection);
 
-/*        histoCollection.getLibraries().stream()
+        histoCollection.getLibraries().stream()
                 .parallel()
                 .unordered()
-                .*/
+                .forEach(concurrentMetrics::add);
 
-        for (final String library : histoCollection.getLibraries()) {
-            pool.execute(() ->
-            {
-                final Histogram<Integer> duplicationHisto = histoCollection.getDuplicationHisto(library);
-                final Histogram<Integer> opticalHisto = histoCollection.getOpticalHisto(library);
-                final DuplicationMetrics metrics = new DuplicationMetrics();
-
-                metrics.LIBRARY = library;
-                // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
-
-                for (final Integer bin : duplicationHisto.keySet()) {
-                    final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                    final double opticalDuplicates = (opticalHisto.get(bin) == null)
-                                                   ? 0
-                                                   : opticalHisto.get(bin).getValue();
-
-                    if (duplicateGroups >= MIN_GROUP_COUNT) {
-                        metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
-                        metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
-                        metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
-                    }
-                }
-                metrics.calculateDerivedFields();
-
-                synchronized (sync) {
-                    file.addMetric(metrics);
-                    file.addHistogram(duplicationHisto);
-                }
-            });
-        }
+        concurrentMetrics.writeResults();
 
         pool.shutdown();
         try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
@@ -161,7 +127,6 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         log.info("----------------------------------------");
         log.info("TOTAL  - STREAMED (ms) : " + (sortTime + doWorkTotal));
 
-        file.write(OUTPUT);
         return 0;
     }
 }

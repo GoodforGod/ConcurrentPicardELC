@@ -15,18 +15,19 @@ import java.util.function.Function;
 /*
  * DEFAULT COMMENT
  */
-public class QueueIteratorProducer<Object, Produced>
+public class QueueProducer<Object, Produced>
 {
     private final int JOB_CAPACITY;
+
     private final int JOB_CAPACITY_DAFAULT = 8;
 
     private final PeekableIterator<Object> iterator;
     private final Function<PeekableIterator<Object>, Produced> handler;
     private final BlockingQueue<Produced> queue;
 
-    public QueueIteratorProducer(PeekableIterator<Object> iterator,
-                                 Function<PeekableIterator<Object>, Produced> handler,
-                                 int capacity) {
+    public QueueProducer(PeekableIterator<Object> iterator,
+                         Function<PeekableIterator<Object>, Produced> handler,
+                         int capacity) {
         this.iterator = iterator;
         this.handler = handler;
         this.JOB_CAPACITY = capacity;
@@ -34,8 +35,8 @@ public class QueueIteratorProducer<Object, Produced>
         start();
     }
 
-    public QueueIteratorProducer(PeekableIterator<Object> iterator,
-                                 Function<PeekableIterator<Object>, Produced> handler) {
+    public QueueProducer(PeekableIterator<Object> iterator,
+                         Function<PeekableIterator<Object>, Produced> handler) {
         this.iterator = iterator;
         this.handler = handler;
         this.JOB_CAPACITY = JOB_CAPACITY_DAFAULT;
@@ -45,10 +46,8 @@ public class QueueIteratorProducer<Object, Produced>
 
     private void start() {
         new Thread(() -> {
-            while (iterator.hasNext()) {
-                try                             { queue.put(handler.apply(iterator)); }
-                catch (InterruptedException e)  { e.printStackTrace(); }
-            }
+            try                             { queue.put(handler.apply(iterator)); }
+            catch (InterruptedException e)  { e.printStackTrace(); }
         }).start();
     }
 

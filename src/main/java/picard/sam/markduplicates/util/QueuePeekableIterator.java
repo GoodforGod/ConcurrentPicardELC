@@ -8,6 +8,7 @@ package picard.sam.markduplicates.util;
 
 import htsjdk.samtools.util.CloseableIterator;
 import htsjdk.samtools.util.CloserUtil;
+import htsjdk.samtools.util.PeekableIterator;
 
 import java.util.Iterator;
 import java.util.concurrent.BlockingQueue;

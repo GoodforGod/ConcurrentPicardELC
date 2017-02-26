@@ -12,13 +12,13 @@ import htsjdk.samtools.SamReader;
 import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
+import jdk.internal.util.xml.impl.Pair;
 import picard.cmdline.CommandLineProgramProperties;
+import picard.cmdline.Option;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 import picard.sam.markduplicates.util.OpticalDuplicateFinder;
-import picard.sam.markduplicates.util.QueueIteratorProducer;
-import picard.sam.markduplicates.util.QueuePeekableIterator;
 
 import java.io.File;
 import java.util.*;
@@ -26,6 +26,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import static java.lang.Math.nextUp;
 import static java.lang.Math.pow;
@@ -63,30 +64,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    // Temporary structure, used while processing histograms via StreamAPI
-    protected class HistoAndMetric {
-        final Histogram<Integer> duplicationHisto;
-        final DuplicationMetrics metrics;
-
-        public HistoAndMetric(DuplicationMetrics metrics,
-                              Histogram<Integer> duplicationHisto)
-        {
-            this.duplicationHisto = duplicationHisto;
-            this.metrics = metrics;
-        }
-    }
-
-    // Temporary structure, used while processing histograms via StreamAPI
-    protected class HistoTuple {
-        public final Histogram<Integer> duplicate;
-        public final Histogram<Integer> optical;
-
-        public HistoTuple(Histogram<Integer> duplicate, Histogram<Integer> optical) {
-            this.duplicate = duplicate;
-            this.optical = optical;
-        }
-    }
-
     // Replacement of the pendingByName (Concurrent)HashMap
     protected class ConcurrentPendingByNameCollection {
         private final int MAP_INIT_CAPACITY = 100;
@@ -106,28 +83,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
 
         public synchronized PairedReadSequence getAsync(SAMRecord record) {
-            PairedReadSequence prs = PairedRSMap.remove(record.getReadName());
-
-            if (prs == null) {
-                // Make a new paired read object and add RG and physical location information to it
-                prs = useBarcodes
-                        ? new PairedReadSequenceWithBarcodes()
-                        : new PairedReadSequence();
-
-                if (opticalDuplicateFinder.addLocationInformation(record.getReadName(), prs)) {
-                    final SAMReadGroupRecord rg = record.getReadGroup();
-                    if (rg != null)
-                        prs.setReadGroup((short) groupRecords.indexOf(rg));
-                }
-                PairedRSMap.put(record.getReadName(), prs);
-            }
-
-            prs.qualityOk = prs.qualityOk && passesQualityCheck(record.getReadBases(),
-                    record.getBaseQualities(),
-                    MIN_IDENTICAL_BASES,
-                    MIN_MEAN_QUALITY);
-
-            return prs;
+           return get(record);
         }
 
         public PairedReadSequence get(SAMRecord record) {
@@ -161,7 +117,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    //
+    // Abstracts, duplicationHisto and opticalHisto inside, is thread-safe
     protected class ConcurrentHistoCollection{
         private final ElcDuplicatesFinderResolver algorithmResolver;
 
@@ -190,6 +146,14 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             return opticalHistosByLibrary.get(library);
         }
 
+        public synchronized void processGroupAsync(final Map.Entry<String, List<PairedReadSequence>> entry) {
+            processGroup(entry.getKey(), entry.getValue());
+        }
+
+        public synchronized void processGroupAsync(final String library, final List<PairedReadSequence> seqs) {
+            processGroup(library, seqs);
+        }
+
         public void processGroup(final String library, final List<PairedReadSequence> seqs) {
             Histogram<Integer> duplicationHisto = duplicationHistosByLibrary.get(library);
             Histogram<Integer> opticalHisto = opticalHistosByLibrary.get(library);
@@ -208,7 +172,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    //
+    // Abstraction, uses ConcurrentQueue and lockers, to correctly process & store data
     protected class ConcurrentSupplier<T> {
         private final int jobCapacity;
         private final int DEFAULT_JOB_QUEUE_CAPACITY = 2;
@@ -251,7 +215,11 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             catch (InterruptedException e)  { e.printStackTrace(); }
         }
 
-        //
+        public long count() {
+            return counter;
+        }
+
+        // try to add & process elements if there are some
         public void tryAddRest() {
             if(!job.isEmpty()) {
                 putToQueue();
@@ -285,18 +253,35 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
     //
     protected class ConcurrentMetrics {
+        private final Map<Histogram<Integer>, DuplicationMetrics> duplicationMetrics = new ConcurrentHashMap<>();
 
-        private Map<Histogram<Integer>, DuplicationMetrics> duplicationMetrics = new ConcurrentHashMap<>();
+        private final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
 
-        public void add(final String library,
-                        final Histogram<Integer> duplicationHisto,
-                        final Histogram<Integer> opticalHisto) {
+        private final ConcurrentHistoCollection histoCollection;
+
+        public ConcurrentMetrics(ConcurrentHistoCollection histoCollection) {
+            this.histoCollection = histoCollection;
+        }
+
+        public void writeResults() {
+            duplicationMetrics.entrySet().forEach(pair -> {
+                file.addHistogram(pair.getKey());
+                file.addMetric(pair.getValue());
+            });
+
+            file.write(OUTPUT);
+        }
+
+        public void add(final String library) {
             final DuplicationMetrics metrics = new DuplicationMetrics();
 
             metrics.LIBRARY = library;
             // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
 
             //duplicationHisto.keySet().stream()
+
+            final Histogram<Integer> duplicationHisto = histoCollection.getDuplicationHisto(library);
+            final Histogram<Integer> opticalHisto = histoCollection.getOpticalHisto(library);
 
             for (final Integer bin : duplicationHisto.keySet()) {
                 final double duplicateGroups = duplicationHisto.get(bin).getValue();
@@ -339,7 +324,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     /**
      * Functions
      */
-    //
+    // Handler to process pairs in QueueProducer (getNextGroup equivalent)
     protected final Function<PeekableIterator<PairedReadSequence>, List<PairedReadSequence>>
                                                                         pairHandler = (iterator) ->
     {
@@ -485,7 +470,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         log.info("Will store " + MAX_RECORDS_IN_RAM + " read pairs in memory before sorting.");
 
         final long startTime = System.nanoTime();
-        final List<SAMRecord> recordsPoisonPill = Collections.emptyList();
 
         final List<SAMReadGroupRecord> readGroups = new ArrayList<>();
         final ProgressLogger progress = new ProgressLogger(log, (int) 1e6, "Read");
@@ -497,7 +481,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                     new PairedReadComparator(),
                     MAX_RECORDS_IN_RAM,
                     TMP_DIR);
-
         // Check for valid pairs & records
         final Predicate<PrsAndRec> isPrsAndRecValid = (prsAndRec) -> (prsAndRec.prs != null
                                                                     && (prsAndRec.prs.qualityOk = prsAndRec.prs.qualityOk
@@ -509,7 +492,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         for (final File f : INPUT) {
             final SamReader in = SamReaderFactory.makeDefault().referenceSequence(REFERENCE_SEQUENCE).open(f);
             readGroups.addAll(in.getFileHeader().getReadGroups());
-            //final Map<String, PairedReadSequence> pendingByName = new ConcurrentHashMap<>();
             final ConcurrentPendingByNameCollection pendingByName
                     = new ConcurrentPendingByNameCollection(useBarcodes, opticalDuplicateFinder, readGroups);
 
@@ -519,17 +501,12 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                     .filter(isRecValid)
                     .map(rec -> {
                         progress.record(rec);
-                        PairedReadSequence prs = pendingByName.get(rec);
-                        // prs.qualityOk check - partly skipped!!!
-                        if(isPrsAndRecValid.test(new PrsAndRec(prs, rec)))
-                            return processPairs(prs, rec, useBarcodes);
-                        else
-                            return new PairedReadSequence();
+                        return processPairs(pendingByName.get(rec),
+                                rec,
+                                useBarcodes);
                     })
-                    //.filter(isPrsAndRecValid)
-                    //.map(pairAndRec -> processPairs(pairAndRec.prs, pairAndRec.rec))
                     .filter(isPairValid)
-                    .forEachOrdered(sorter::add);
+                    .forEach(sorter::add);
 
             CloserUtil.close(in);
         }
@@ -678,7 +655,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                     recordSupplier.add(rec);
             }
 
-/*            in.iterator().stream()
+/*          // Less performance than cycle
+            in.iterator().stream()
                     .parallel()
                     .unordered()
                     .filter(isRecValid)
@@ -804,8 +782,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 if (isPairsPoisonPill.test(groupList))
                     return;
 
-                pool.submit(() ->
-                {
+                pool.submit(() -> {
                     // Get the next group and split it apart by library
                     for (List<PairedReadSequence> group : groupList) {
                         if (group.size() > meanGroupSize * MAX_GROUP_RATIO)
@@ -830,7 +807,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         double groupEndTime = System.nanoTime();
 
-        // FASTER THAN EXECUTOR, FOR 1.4 SECONDS!!!
+        // faster than executor, for 1.4 seconds
         iterator.close();
         sorter.cleanup();
 

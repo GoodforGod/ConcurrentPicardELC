@@ -121,13 +121,11 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
      */
     private ConcurrentSortingCollection(final Class<T> componentType, final SortingCollection.Codec<T> codec,
                               final Comparator<T> comparator, final int maxRecordsInRam, final File... tmpDir) {
-        if (maxRecordsInRam <= 0) {
+        if (maxRecordsInRam <= 0)
             throw new IllegalArgumentException("maxRecordsInRam must be > 0");
-        }
 
-        if (tmpDir == null || tmpDir.length == 0) {
+        if (tmpDir == null || tmpDir.length == 0)
             throw new IllegalArgumentException("At least one temp directory must be provided.");
-        }
 
         this.tmpDirs = tmpDir;
         this.codec = codec;

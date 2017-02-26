@@ -13,7 +13,7 @@ import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
-import picard.sam.markduplicates.util.QueueIteratorProducer;
+import picard.sam.markduplicates.util.QueueProducer;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -21,7 +21,7 @@ import java.util.concurrent.*;
 import static java.lang.Math.pow;
 
 /*
- * FJPOOL Implementation of ELC
+ * FJ POOL Implementation of ELC
  */
 @CommandLineProgramProperties(
         usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,
@@ -53,8 +53,8 @@ public class ConcurrentPoolEstimateLibraryComplexity extends ConcurrentExecutorE
 
         final int meanGroupSize = (int)(Math.max(1, (progress.getCount() / 2) / (int)pow(4, MIN_IDENTICAL_BASES * 2)));
 
-        final QueueIteratorProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
-                = new QueueIteratorProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
+        final QueueProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
+                = new QueueProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
 
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
