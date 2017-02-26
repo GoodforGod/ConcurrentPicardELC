@@ -46,8 +46,10 @@ public class QueueProducer<Object, Produced>
 
     private void start() {
         new Thread(() -> {
-            try                             { queue.put(handler.apply(iterator)); }
-            catch (InterruptedException e)  { e.printStackTrace(); }
+            while (iterator.hasNext()) {
+                try                             { queue.put(handler.apply(iterator)); }
+                catch (InterruptedException e)  { e.printStackTrace(); }
+            }
         }).start();
     }
 

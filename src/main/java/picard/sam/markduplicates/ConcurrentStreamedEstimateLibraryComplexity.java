@@ -7,11 +7,9 @@ package picard.sam.markduplicates;
  */
 
 import htsjdk.samtools.SAMReadGroupRecord;
-import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.programgroups.Metrics;
-import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 import picard.sam.markduplicates.util.QueueProducer;
 
@@ -63,7 +61,6 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                 = new QueueProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
 
         final ForkJoinPool pool = new ForkJoinPool();
-        final Object sync = new Object();
         final long groupStartTime = System.nanoTime();
 
         // Pool process sorted groups
@@ -113,7 +110,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
                 .unordered()
                 .forEach(concurrentMetrics::add);
 
-        concurrentMetrics.writeResults();
+        concurrentMetrics.fillFile();
 
         pool.shutdown();
         try                             { pool.awaitTermination(1000, TimeUnit.SECONDS); }
@@ -127,6 +124,7 @@ public class ConcurrentStreamedEstimateLibraryComplexity extends ConcurrentExecu
         log.info("----------------------------------------");
         log.info("TOTAL  - STREAMED (ms) : " + (sortTime + doWorkTotal));
 
+        concurrentMetrics.writeFile();
         return 0;
     }
 }

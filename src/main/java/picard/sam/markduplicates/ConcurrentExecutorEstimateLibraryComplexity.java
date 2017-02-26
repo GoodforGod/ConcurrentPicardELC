@@ -256,6 +256,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         private final Map<Histogram<Integer>, DuplicationMetrics> duplicationMetrics = new ConcurrentHashMap<>();
 
         private final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
+        private final AtomicInteger locker = new AtomicInteger(0);
 
         private final ConcurrentHistoCollection histoCollection;
 
@@ -263,12 +264,25 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             this.histoCollection = histoCollection;
         }
 
-        public void writeResults() {
+        public void fillFile() {
             duplicationMetrics.entrySet().forEach(pair -> {
                 file.addHistogram(pair.getKey());
                 file.addMetric(pair.getValue());
             });
+        }
 
+        public void awaitAdding() {
+            while(locker.get() != 0) {
+                if(locker.get() == 0)
+                    break;
+            }
+        }
+
+        public void submitAdd() {
+            locker.incrementAndGet();
+        }
+
+        public void writeFile() {
             file.write(OUTPUT);
         }
 
@@ -297,6 +311,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
             }
             metrics.calculateDerivedFields();
             duplicationMetrics.put(duplicationHisto, metrics);
+            locker.decrementAndGet();
         }
 
         public Set<Map.Entry<Histogram<Integer>, DuplicationMetrics>> getMetrics() {

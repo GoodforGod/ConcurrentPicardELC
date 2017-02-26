@@ -108,40 +108,16 @@ public class ConcurrentPoolEstimateLibraryComplexity extends ConcurrentExecutorE
         sorter.cleanup();
 
         final long metricStartTime = System.nanoTime();
-        final MetricsFile<DuplicationMetrics, Integer> file = getMetricsFile();
+        final ConcurrentMetrics concurrentMetrics = new ConcurrentMetrics(histoCollection);
 
-        for (final String library : histoCollection.getLibraries())
-        {
-            pool.execute(() ->
-            {
-                final Histogram<Integer> duplicationHisto = histoCollection.getDuplicationHisto(library);
-                final Histogram<Integer> opticalHisto = histoCollection.getOpticalHisto(library);
-                final DuplicationMetrics metrics = new DuplicationMetrics();
-
-                metrics.LIBRARY = library;
-
-                // Filter out any bins that have fewer than MIN_GROUP_COUNT entries in them and calculate derived metrics
-                for (final Integer bin : duplicationHisto.keySet())
-                {
-                    final double duplicateGroups = duplicationHisto.get(bin).getValue();
-                    final double opticalDuplicates = opticalHisto.get(bin) == null
-                            ? 0
-                            : opticalHisto.get(bin).getValue();
-
-                    if (duplicateGroups >= MIN_GROUP_COUNT) {
-                        metrics.READ_PAIRS_EXAMINED += (bin * duplicateGroups);
-                        metrics.READ_PAIR_DUPLICATES += ((bin - 1) * duplicateGroups);
-                        metrics.READ_PAIR_OPTICAL_DUPLICATES += opticalDuplicates;
-                    }
-                }
-                metrics.calculateDerivedFields();
-
-                synchronized (sync) {
-                    file.addMetric(metrics);
-                    file.addHistogram(duplicationHisto);
-                }
-            });
+        //histoCollection.getLibraries().forEach(library -> pool.execute(() -> concurrentMetrics.add(library)));
+        for (final String library : histoCollection.getLibraries()) {
+            concurrentMetrics.submitAdd();
+            pool.execute(() -> concurrentMetrics.add(library));
         }
+
+        concurrentMetrics.awaitAdding();
+        concurrentMetrics.fillFile();
 
         pool.shutdown();
         try                             { pool.awaitTermination( 1000, TimeUnit.SECONDS); }
@@ -155,7 +131,7 @@ public class ConcurrentPoolEstimateLibraryComplexity extends ConcurrentExecutorE
         log.info("----------------------------------------");
         log.info("TOTAL  - FJ POOL (ms) : " + (sortTime + doWorkTotal));
 
-        file.write(OUTPUT);
+        concurrentMetrics.writeFile();
         return 0;
     }
 }
