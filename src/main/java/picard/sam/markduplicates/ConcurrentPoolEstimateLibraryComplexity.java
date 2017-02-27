@@ -21,7 +21,7 @@ import java.util.concurrent.*;
 import static java.lang.Math.pow;
 
 /*
- * FJ POOL Implementation of ELC
+ * FJ POOL Implementation of ELC, implements all major improvements and works under FJ Pool
  */
 @CommandLineProgramProperties(
         usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,

@@ -21,7 +21,7 @@ import static java.lang.Math.decrementExact;
 import static java.lang.Math.pow;
 
 /*
- * Streamed version of ELC
+ * Streamed version of ELC, implements all major improvements, uses streams in most cases
  */
 @CommandLineProgramProperties(
         usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,

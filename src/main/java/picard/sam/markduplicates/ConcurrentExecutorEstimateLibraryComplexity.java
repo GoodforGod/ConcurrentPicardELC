@@ -12,7 +12,6 @@ import htsjdk.samtools.SamReader;
 import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
-import jdk.internal.util.xml.impl.Pair;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.Option;
 import picard.cmdline.programgroups.Metrics;
@@ -26,13 +25,12 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.function.Supplier;
 
 import static java.lang.Math.nextUp;
 import static java.lang.Math.pow;
 
 /*
- * Thread Executor version of the ELC
+ * Thread Executor, basic version with some minor improvements version of the ELC
  */
 @CommandLineProgramProperties(
         usage = EstimateLibraryComplexity.USAGE_SUMMARY + EstimateLibraryComplexity.USAGE_DETAILS,
