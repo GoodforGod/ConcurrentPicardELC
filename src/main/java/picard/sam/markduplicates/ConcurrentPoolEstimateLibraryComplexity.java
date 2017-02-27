@@ -55,16 +55,13 @@ public class ConcurrentPoolEstimateLibraryComplexity extends ConcurrentExecutorE
 
         final QueueProducer<PairedReadSequence, List<PairedReadSequence>> pairProducer
                 = new QueueProducer<>(new PeekableIterator<>(sorter.iterator()), pairHandler);
-
         final ConcurrentSupplier<List<PairedReadSequence>> groupSupplier
                 = new ConcurrentSupplier<>(GROUP_PROCESS_STACK_SIZE, USED_THREADS);
-
         final ConcurrentHistoCollection histoCollection = new ConcurrentHistoCollection(useBarcodes);
 
         //final ExecutorService pool = Executors.newFixedThreadPool(USED_THREADS);
-        //final ForkJoinPool pool = new ForkJoinPool();
-        final ExecutorService pool = Executors.newCachedThreadPool();
-        final Object sync = new Object();
+        //final ExecutorService pool = Executors.newCachedThreadPool();
+        final ForkJoinPool pool = new ForkJoinPool();
 
         // pool manager, receives job of groups, and make worker to process them
         // Now go through the sorted reads and attempt to find duplicates
@@ -110,7 +107,6 @@ public class ConcurrentPoolEstimateLibraryComplexity extends ConcurrentExecutorE
         final long metricStartTime = System.nanoTime();
         final ConcurrentMetrics concurrentMetrics = new ConcurrentMetrics(histoCollection);
 
-        //histoCollection.getLibraries().forEach(library -> pool.execute(() -> concurrentMetrics.add(library)));
         for (final String library : histoCollection.getLibraries()) {
             concurrentMetrics.submitAdd();
             pool.execute(() -> concurrentMetrics.add(library));

@@ -218,17 +218,13 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
 
     // used cycle to loop and wait for spilling to over
     public void awaitSpillingToDisk() {
-        while (isSpillingToDisk()) {
-            if(!isSpillingToDisk())
-                return;
-        }
+        while (isSpillingToDisk());
     }
 
     /**
      * Sort the records in memory, write them to a file, and clear the buffer of records in memory.
      */
     private void spillToDisk(final T[] buffer, final int numRecordsInRam) {
-
         try {
             //long start = System.nanoTime();
             //Arrays.parallelSort(buffer, 0, numRecordsInRam, this.comparator);

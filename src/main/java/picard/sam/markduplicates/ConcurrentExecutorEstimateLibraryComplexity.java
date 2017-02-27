@@ -44,7 +44,13 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     protected final Log log = Log.getInstance(ConcurrentExecutorEstimateLibraryComplexity.class);
 
     public ConcurrentExecutorEstimateLibraryComplexity() {
-        super();
+        final int sizeInBytes;
+        if (null != BARCODE_TAG || null != READ_ONE_BARCODE_TAG || null != READ_TWO_BARCODE_TAG)
+            sizeInBytes = PairedReadSequenceWithBarcodes.getSizeInBytes();
+        else
+            sizeInBytes = PairedReadSequence.getSizeInBytes();
+
+        MAX_RECORDS_IN_RAM = (int) (Runtime.getRuntime().maxMemory() / sizeInBytes) / 3;
     }
 
     /**
@@ -239,10 +245,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         // Waiting for all threads finish their job and check for missed group stacks
         public void awaitConfirmation() {
-            while (jobsInProgress.get() != 0) {
-                if(jobsInProgress.get() == 0)
-                    break;
-            }
+            while (jobsInProgress.get() != 0);
         }
 
         public void finish() {
@@ -251,7 +254,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
     }
 
-    //
+    // Abstraction for last phase, when we add metrics to file
     protected class ConcurrentMetrics {
         private final Map<Histogram<Integer>, DuplicationMetrics> duplicationMetrics = new ConcurrentHashMap<>();
 
@@ -272,10 +275,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         }
 
         public void awaitAdding() {
-            while(locker.get() != 0) {
-                if(locker.get() == 0)
-                    break;
-            }
+            while(locker.get() != 0);
         }
 
         public void submitAdd() {
@@ -457,11 +457,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                 }
             }
 
-            // Some useless work to wait for locks
-            while (locker.get() != 0 || sorter.isSpillingToDisk()){
-                if(locker.get() == 0 && !sorter.isSpillingToDisk())
-                    break;
-            }
+            // Wait for job to finish
+            while (locker.get() != 0 || sorter.isSpillingToDisk());
 
             CloserUtil.close(in);
         }
@@ -753,7 +750,7 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     protected final int QUEUE_CAPACITY = 4;
 
     //
-    protected final int USED_THREADS = 8;
+    protected final int USED_THREADS = 4;
 
     /**
      * doWork main calculation method
