@@ -17,6 +17,6 @@ import picard.sam.markduplicates.EstimateLibraryComplexity;
 public class BenchmarkELC
 {
     public static void main(String[] args) {
-        new ConcurrentPoolEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
+        new ConcurrentStreamedEstimateLibraryComplexity().instanceMain(BenchmarkVariables.small_bam_args);
     }
 }

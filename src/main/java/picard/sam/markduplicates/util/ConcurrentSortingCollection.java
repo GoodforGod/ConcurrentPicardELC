@@ -226,8 +226,6 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
      */
     private void spillToDisk(final T[] buffer, final int numRecordsInRam) {
         try {
-            //long start = System.nanoTime();
-            //Arrays.parallelSort(buffer, 0, numRecordsInRam, this.comparator);
             final File f = newTempFile();
             OutputStream os = tempStreamFactory.wrapTempOutputStream(new FileOutputStream(f), Defaults.BUFFER_SIZE);
 
@@ -238,12 +236,6 @@ public class ConcurrentSortingCollection<T> implements Iterable<T> {
                         .unordered()
                         .sorted(this.comparator)
                         .forEachOrdered(this.codec::encode);
-
-/*                for (int i = 0; i < numRecordsInRam; ++i) {
-                    this.codec.encode(buffer[i]);
-                    buffer[i] = null;
-                }*/
-                //System.out.println("TOOK (ms): " + (System.nanoTime() - start) / 1000000);
 
                 os.flush();
             }

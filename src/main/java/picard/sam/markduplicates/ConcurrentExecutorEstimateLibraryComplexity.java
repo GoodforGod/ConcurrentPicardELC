@@ -12,12 +12,14 @@ import htsjdk.samtools.SamReader;
 import htsjdk.samtools.SamReaderFactory;
 import htsjdk.samtools.metrics.MetricsFile;
 import htsjdk.samtools.util.*;
+import org.omg.SendingContext.RunTime;
 import picard.cmdline.CommandLineProgramProperties;
 import picard.cmdline.Option;
 import picard.cmdline.programgroups.Metrics;
 import picard.sam.DuplicationMetrics;
 import picard.sam.markduplicates.util.ConcurrentSortingCollection;
 import picard.sam.markduplicates.util.OpticalDuplicateFinder;
+import picard.sam.markduplicates.util.QueueProducer;
 
 import java.io.File;
 import java.util.*;
@@ -665,13 +667,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
                     recordSupplier.add(rec);
             }
 
-/*          // Less performance than cycle
-            in.iterator().stream()
-                    .parallel()
-                    .unordered()
-                    .filter(isRecValid)
-                    .forEach(recordSupplier::add);*/
-
             recordSupplier.tryAddRest();
             recordSupplier.awaitConfirmation();
             sorter.awaitSpillingToDisk();
@@ -710,9 +705,9 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     private PairedReadSequence processPairs(final PairedReadSequence prs,
                                             final SAMRecord record,
                                             final boolean useBarcodes) {
-/*        final PairedReadSequenceWithBarcodes prsWithBarcodes = (useBarcodes)
+        final PairedReadSequenceWithBarcodes prsWithBarcodes = (useBarcodes)
                 ? (PairedReadSequenceWithBarcodes) prs
-                : null;*/
+                : null;
 
         // Get the bases and restore them to their original orientation if necessary
         final byte[] bases = record.getReadBases();
@@ -723,15 +718,15 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
         if (record.getFirstOfPairFlag()) {
             prs.read1 = bases;
 
-/*            if (useBarcodes) {
+            if (useBarcodes) {
                 prsWithBarcodes.barcode = getBarcodeValue(record);
                 prsWithBarcodes.readOneBarcode = getReadOneBarcodeValue(record);
-            }*/
+            }
         } else {
             prs.read2 = bases;
 
-/*            if (useBarcodes)
-                prsWithBarcodes.readTwoBarcode = getReadTwoBarcodeValue(record);*/
+            if (useBarcodes)
+                prsWithBarcodes.readTwoBarcode = getReadTwoBarcodeValue(record);
         }
         return prs;
     }
@@ -744,11 +739,8 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
     //Group size to process job in doWork
     protected final int GROUP_PROCESS_STACK_SIZE = 50000;
 
-    //
-    protected final int QUEUE_CAPACITY = 4;
-
-    //
-    protected final int USED_THREADS = 4;
+    // Represents max CORES & Hyper-Threaded cores on machine
+    protected final int USED_THREADS = Runtime.getRuntime().availableProcessors();
 
     /**
      * doWork main calculation method
@@ -817,7 +809,6 @@ public class ConcurrentExecutorEstimateLibraryComplexity extends EstimateLibrary
 
         double groupEndTime = System.nanoTime();
 
-        // faster than executor, for 1.4 seconds
         iterator.close();
         sorter.cleanup();
 
