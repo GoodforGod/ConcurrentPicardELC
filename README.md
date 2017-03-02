@@ -8,32 +8,30 @@ All credits to Broad Institute [[ORIGINAL REPO](https://github.com/broadinstitut
 
 Main goal was to redesign **Estimated Library Complexity** from sequential to concurrent implementation, also SortingCollection was rewritten in _concurrent_ & _thread-safe_ way.   
 
-### Differences
-
-#### ELC
+### ELC
 
 There are 3 different concurrent implementation, the best and the most performance one **[STREAM]**, and the two least _code-clean_ and **may be** less _performance_.
 
-Also **[THE LEAST]** version contains all Predicates, abstract collection and etc, which are used in all Concurrent implementations.
+Also **[EXECUTOR]** version contains all Predicates, abstract collection and etc, which are used in all Concurrent implementations.
 
 P.S.
 All _help_ and _support_ classes and predicates were grouped in **[EXECUTOR]** _intentionally_. 
 
-**Estimated Library Complexity**
-[[ORIGINAL]()]
+_Estimated Library Complexity_
+[[ORIGINAL](src/main/java/picard/sam/markduplicates/EstimateLibraryComplexity.java)]
 
-**Custom Estimated Library Complexity** 
+_Custom Estimated Library Complexity_
 [[STREAM](src/main/java/picard/sam/markduplicates/ConcurrentStreamedEstimateLibraryComplexity.java) | [POOL](src/main/java/picard/sam/markduplicates/ConcurrentPoolEstimateLibraryComplexity.java) | [EXECUTOR]( src/main/java/picard/sam/markduplicates/ConcurrentExecutorEstimateLibraryComplexity.java)]
 
-#### Sorting Collection
+### Sorting Collection
 
-**Sorting Collection**
+_Sorting Collection_
 [[ORIGINAL](https://github.com/samtools/htsjdk/blob/master/src/main/java/htsjdk/samtools/util/SortingCollection.java)]
 
-**Custom Sorting Collection** 
+_Custom Sorting Collection_ 
 [[CUSTOM](src/main/java/picard/sam/markduplicates/util/ConcurrentSortingCollection.java)]
 
-#### Others
+### Others
 
 Abstraction wrapper over PeekableIterator, used to read and filter sorted files in async mode.
 [[QueueProducer](src/main/java/picard/sam/markduplicates/util/QueueProducer.java)]
