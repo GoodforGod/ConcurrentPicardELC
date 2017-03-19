@@ -1,4 +1,4 @@
-#Custom Picard ELC Implementation
+# Custom Picard ELC Implementation
 
 A set of Java command line tools for manipulating high-throughput sequencing (HTS) data and formats.
 
