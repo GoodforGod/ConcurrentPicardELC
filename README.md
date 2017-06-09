@@ -8,7 +8,7 @@ All credits to Broad Institute [[ORIGINAL REPO](https://github.com/broadinstitut
 
 Main goal was to redesign **Estimated Library Complexity** from sequential to concurrent implementation, also SortingCollection was rewritten in _concurrent_ & _thread-safe_ way.   
 
-### ELC
+## ELC Library Changes
 
 There are 3 different concurrent implementation, the best and the most performance one **[STREAM]**, and the two least _code-clean_ and **may be** less _performance_.
 
@@ -31,12 +31,44 @@ _Sorting Collection_
 _Custom Sorting Collection_ 
 [[CUSTOM](src/main/java/picard/sam/markduplicates/util/ConcurrentSortingCollection.java)]
 
-### Others
+### Other
 
 Abstraction wrapper over PeekableIterator, used to read and filter sorted files in async mode.
 [[QueueProducer](src/main/java/picard/sam/markduplicates/util/QueueProducer.java)]
 
-##Building Picard
+## Performance Results
+
+### First Test
+| **Heap Size** | **Bam File Size** | **JDK**  | **Processor** |
+| --- | --- | --- | --- | 
+| *256mb* | *464mb* | *1.8.0_121 (64bit)* | *i3-4030u 1x2x2* |
+
+#### Result
+
+| **Implementation Name** | **Avegange Time (ms)** | **Amount of iteratins** | **MaxPairsInMemoty** |
+| --- | --- | --- | --- |
+| *Default*                 | *55541.009* | *5* | *169196* |
+| *ConcurrentExecutorELC*   | *37775.565* | *5* | *169196* |
+| *ConcurrentPoolELC*       | *39255.594* | *5* | *169196* |
+| *ConcurrentStreamedELC*   | *40355.021* | *5* | *169196* |
+
+* The best custom implementation is **47%** faster.
+
+### Second Test
+| **Heap Size** | **Bam File Size** | **JDK**  | **Processor** |
+| --- | --- | --- | --- | 
+| *4gb* | *16.9gb* | *1.8.0_121 (64bit)* | *i3-4030u 1x2x2* |
+
+#### Result
+
+| **Implementation Name** | **Avegange Time (ms)** | **Amount of iteratins** |
+| --- | --- | --- |
+| *Default*                 | *1972577.978* | *5* |
+| *ConcurrentExecutorELC*   | *1253195.879* | *5* |
+
+* Custom impelemntation is **57.4%** faster.
+
+## Building Picard
 
 * To build a fully-packaged, runnable Picard jar with all dependencies included, run:
 ```
